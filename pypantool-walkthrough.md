@@ -55,6 +55,8 @@ pypantool/
 │   ├── filelist.py            ← Export a list of loaded files (name, path, size, date)
 │   ├── lines.py               ← Extract or delete lines by number or content match
 │   ├── naming.py              ← Resolve output filenames from a pattern like "%N_out%E"
+│   ├── recalc.py              ← Recalculate column values: new = old × factor + offset
+│   ├── rename.py              ← Filename transformation: search/replace, prefix, suffix
 │   └── search_replace.py      ← Find/replace one string or many at once
 │
 ├── gui/
@@ -63,7 +65,7 @@ pypantool/
 │   ├── run_tool.py            ← Wires a dialog's settings to a background worker
 │   ├── style.py               ← All visual styling (slate-blue theme)
 │   ├── worker.py              ← Background threads that do the actual file I/O
-│   └── dialogs/               ← One small dialog per tool (11 dialog files)
+│   └── dialogs/               ← One small dialog per tool (13 dialog files)
 │
 └── tests/
     ├── fixtures/
@@ -75,6 +77,8 @@ pypantool/
     ├── test_duplicates.py
     ├── test_filelist.py
     ├── test_lines.py
+    ├── test_recalc.py
+    ├── test_rename.py
     └── test_search_replace.py
 ```
 
@@ -221,7 +225,7 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** Three classes that run file processing in a background thread so the window never freezes. They communicate with the main window by emitting signals (like notifications) for events such as "started file 3 of 10", "processed 500,000 lines", and "all done".
 
 #### ProcessWorker
-**What it does:** Opens each file, feeds lines to a core processing function one at a time, and writes the output lines immediately to the output file. Reports progress every 5,000 lines. Used by all single-file tools (extract columns, delete duplicates, etc.).
+**What it does:** Opens each file, feeds lines to a core processing function one at a time, and writes the output lines immediately to the output file. Reports progress every 5,000 lines. Used by all single-file tools (extract columns, delete duplicates, recalculate columns, etc.).
 
 #### ConcatWorker
 **What it does:** Opens all input files at the same time, passes their line streams to the concat function, and writes the result. Keeps all files open simultaneously so rows can be interleaved (needed for side-by-side merging).
@@ -229,8 +233,11 @@ Settings are saved automatically in the Windows registry and remembered across s
 #### FilelistWorker
 **What it does:** The simplest worker — it doesn't read any file contents, just collects file metadata and writes the summary file.
 
-**Why all three exist separately:** Their patterns of file access are fundamentally different — one file at a time vs. all at once vs. no file reading at all.
-**Things to know:** If an error occurs during processing, the worker catches it and sends an error notification to the window, which shows a message box. No partial output files are left behind.
+#### RenameWorker
+**What it does:** Renames files in place on disk (no new output file is created). Iterates through the (old path, new path) pairs computed by the dialog preview and calls the operating system rename for each pair. Files whose name would not change are skipped. After all renames succeed, emits the list of new paths so the file list table updates.
+
+**Why all four exist separately:** Their patterns of file access are fundamentally different — one file at a time vs. all at once vs. no file reading at all vs. in-place rename with no content I/O.
+**Things to know:** If an error occurs during processing, the worker catches it and sends an error notification to the window, which shows a message box. No partial output files are left behind. For `RenameWorker`, if a rename fails mid-way (e.g. a file is locked), processing stops and already-renamed files keep their new names.
 
 ---
 
@@ -262,13 +269,28 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** After a tool runs, the output files automatically replace the input files in the list. Running another tool immediately processes the output of the previous one. The `%a` counter in the filename pattern increments with each run, so outputs are named `data_out_1.txt`, `data_out_2.txt`, etc.
 
 #### Menus
-**What it does:** The Tools menu has 15 items, one per tool. Clicking any of them opens the corresponding small dialog. File menu has Open, Open Folder, Clear, Options, and Quit. Help menu has About.
+**What it does:** The Tools menu has 17 items, one per tool. Clicking any of them opens the corresponding small dialog. File menu has Open, Open Folder, Clear, Options, and Quit. Help menu has About.
 
 **Things to know:** Each menu item's dialog is only loaded from disk when you click it (not at startup). This keeps the app fast to launch.
 
 ---
 
-### `gui/dialogs/` — Tool Dialogs (11 files)
+### `core/recalc.py` — Column Recalculation
+
+**What it does:** Applies the formula `new = old × factor + offset` to selected columns, streaming line by line. Column selection uses the same spec syntax as the other column tools ("4", "2,4", "3-5", "3-end"). A configurable number of header lines at the top are passed through unchanged. Non-numeric values in a targeted column (e.g. column header text that wasn't skipped) are also passed through unchanged rather than causing an error.
+**Why it exists:** Common need in scientific data work — converting units (°C to K, dbar to metres, etc.) across many files at once.
+**Things to know:** Results are formatted with up to 15 significant digits, which preserves the full precision of standard 64-bit floating-point numbers. Integer results (e.g. 5 × 2 = 10) are written without a decimal point.
+
+---
+
+### `core/rename.py` — Filename Transformation
+
+**What it does:** Two pure functions. `apply_rename` takes a filename and returns the transformed name based on three optional operations applied in order: (1) search/replace a substring anywhere in the filename, (2) prepend text before the filename, (3) insert a suffix after the stem but before the extension (e.g. `_v2` turns `data.tab` into `data_v2.tab`). `preview_renames` applies this to a list of file paths without touching the filesystem.
+**Why the preview function exists:** The rename dialog calls it live as the user types, so the table of old→new names updates instantly without any disk access. The actual renaming only happens when OK is clicked.
+
+---
+
+### `gui/dialogs/` — Tool Dialogs (13 files)
 
 Each tool has its own small dialog. They all follow the same pattern: a short form collecting the tool's parameters, an OK button that validates input and launches the worker, and a Cancel button. None of them contain processing logic — they just collect settings and pass them to `run_tool.py`.
 
@@ -287,12 +309,14 @@ Here's a quick reference:
 | `SearchReplaceDialog` | Search text and replacement text |
 | `SearchReplaceManyDialog` | Path to a tab-delimited database file of search/replace pairs |
 | `FilelistDialog` | No settings — just confirm |
+| `RecalcDialog` | Column spec, factor, offset, number of header lines to skip |
+| `RenameDialog` | Search/replace in filename, prefix, suffix; shows live old→new preview table |
 
 ---
 
 ### `tests/` — Automated Tests
 
-**What it does:** 162 tests that verify the core processing functions work correctly. They run automatically (e.g., with `pytest`) and take a few seconds. No GUI is involved.
+**What it does:** 162 tests that verify the core processing functions work correctly. They run automatically (e.g., with `pytest`) and take under a second. No GUI is involved.
 
 #### Test fixtures
 **What it does:** Two realistic data files that all tests use as input:
@@ -308,6 +332,8 @@ Here's a quick reference:
 - `test_duplicates.py` (8 tests): Adjacent and non-adjacent duplicates, order preserved, case sensitivity.
 - `test_filelist.py` (8 tests): Header format, all metadata fields present, graceful handling of missing files.
 - `test_lines.py` (23 tests): All spec formats, matched line extraction, regex patterns, complement property.
+- `test_recalc.py` (12 tests): Factor, offset, combined formula, multi-column ranges, non-numeric passthrough, header skipping, custom delimiter, integer vs. float formatting.
+- `test_rename.py` (14 tests): Search/replace, prefix, suffix, combined operations, filesystem not modified by preview, empty file list.
 - `test_search_replace.py` (20 tests): All occurrences replaced, replacement ordering, empty search values skipped, database loading.
 
 ---
