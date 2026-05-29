@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
         self._tools_menu.addSeparator()
         self._add_tool("D&elete Columns…", self._run_delete_columns)
         self._add_tool("Delete Matched Col&umns…", self._run_delete_matched_columns)
+        self._add_tool("&Recalculate Columns…", self._run_recalc_columns)
         self._tools_menu.addSeparator()
         self._add_tool("&Extract Lines…", self._run_extract_lines)
         self._add_tool("Extract &Matched Lines…", self._run_extract_matched_lines)
@@ -161,6 +162,8 @@ class MainWindow(QMainWindow):
         self._add_tool("Search and Replace &Many…", self._run_search_replace_many)
         self._tools_menu.addSeparator()
         self._add_tool("Save &File List…", self._run_save_filelist)
+        self._tools_menu.addSeparator()
+        self._add_tool("Re&name Files…", self._run_rename_files)
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = menubar.addMenu("&Help")
@@ -383,6 +386,14 @@ class MainWindow(QMainWindow):
     def _run_save_filelist(self) -> None:
         from gui.dialogs.filelist_dialog import FilelistDialog
         FilelistDialog(self).exec()
+
+    def _run_recalc_columns(self) -> None:
+        from gui.dialogs.recalc_dialog import RecalcDialog
+        RecalcDialog(self).exec()
+
+    def _run_rename_files(self) -> None:
+        from gui.dialogs.rename_dialog import RenameDialog
+        RenameDialog(self).exec()
 
     # ── System dialogs ─────────────────────────────────────────────────────────
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QMessageBox
 
 from core.naming import resolve_output_path
-from gui.worker import ConcatWorker, FilelistWorker, ProcessWorker
+from gui.worker import ConcatWorker, FilelistWorker, ProcessWorker, RenameWorker
 
 
 def run_tool(
@@ -109,6 +109,53 @@ def run_concat(
     main_window.set_busy(label)
     worker.error.connect(_on_error)
     worker.done.connect(_on_done)
+
+    main_window.attach_worker(worker)
+
+
+def run_rename(
+    main_window,
+    search: str = "",
+    replace: str = "",
+    prefix: str = "",
+    suffix: str = "",
+) -> None:
+    """Rename all loaded files in place and update the file list.
+
+    Args:
+        main_window: The :class:`~gui.main_window.MainWindow` instance.
+        search:  Substring to find in the filename.
+        replace: Replacement for every occurrence of *search*.
+        prefix:  Text prepended to the full filename.
+        suffix:  Text inserted after the stem, before the extension.
+    """
+    from core.rename import preview_renames
+
+    pairs = preview_renames(
+        main_window.files,
+        search=search,
+        replace=replace,
+        prefix=prefix,
+        suffix=suffix,
+    )
+
+    worker = RenameWorker(pairs=pairs)
+
+    def _on_file_renamed(idx: int, total: int, old_name: str, new_path: Path) -> None:
+        main_window.set_busy(f"Rename: {old_name} → {new_path.name} ({idx}/{total})")
+
+    def _on_error(msg: str) -> None:
+        main_window.set_idle()
+        QMessageBox.warning(main_window, "Rename error", msg)
+
+    def _on_done(new_paths: list) -> None:
+        main_window.replace_files(new_paths)
+        main_window.set_idle(f"Done — {len(new_paths)} file(s) renamed")
+
+    main_window.set_busy("Renaming files…")
+    worker.file_renamed.connect(_on_file_renamed)
+    worker.error.connect(_on_error)
+    worker.all_done.connect(_on_done)
 
     main_window.attach_worker(worker)
 

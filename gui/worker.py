@@ -198,6 +198,43 @@ class FilelistWorker(QThread):
             self.error.emit(str(exc))
 
 
+class RenameWorker(QThread):
+    """Rename files in place on a background thread.
+
+    Signals:
+        file_renamed(int, int, str, Path):
+            Emitted for each renamed file: (1-based index, total, old_name, new_path).
+        all_done(list):
+            New Path list after all renames complete successfully.
+        error(str):
+            Emitted on first failure; processing stops.
+    """
+
+    file_renamed = Signal(int, int, str, Path)
+    all_done = Signal(list)
+    error = Signal(str)
+
+    def __init__(self, pairs: list[tuple[Path, Path]], parent: Any = None) -> None:
+        super().__init__(parent)
+        self._pairs = pairs
+
+    def run(self) -> None:
+        total = len(self._pairs)
+        new_paths: list[Path] = []
+        for idx, (old_path, new_path) in enumerate(self._pairs, start=1):
+            if old_path == new_path:
+                new_paths.append(new_path)
+                continue
+            try:
+                old_path.rename(new_path)
+            except OSError as exc:
+                self.error.emit(f"{old_path.name}: {exc}")
+                return
+            self.file_renamed.emit(idx, total, old_path.name, new_path)
+            new_paths.append(new_path)
+        self.all_done.emit(new_paths)
+
+
 def _stripped_lines(fh: Iterable[str]) -> Iterator[str]:
     """Yield lines with the trailing newline removed."""
     for line in fh:
