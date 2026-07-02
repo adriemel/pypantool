@@ -66,6 +66,18 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 15. **Search and replace many strings at once** - asks for a "search and replace database" file (1st column search text, second column replace text) and does a find replace of many strings in either one or many files
 16. **Recalculate columns** — apply `new = old × factor + offset` to selected columns (same spec syntax as extract/delete). Non-numeric values and configurable number of header lines pass through unchanged.
 17. **Rename files** — bulk in-place rename with search/replace in filename, prefix, and suffix (suffix inserts before extension). Dialog shows a live old→new preview before executing.
+18. **Extract 10 min lines** — time-series thinning: keep one line per interval (default 600 s) based on the ISO-format `Date/Time` column. First and last data lines are always kept; malformed timestamps produce an error-marker line.
+19. **Search one string** — report every match across all loaded files as `Filename / Line / String` rows (works with a single file). Options: start line, number of lines.
+20. **Insert characters at positions** — insert text before each 1-based character position (`5,10-12` spec syntax) in every line. `^t` = tab.
+21. **Replace characters at positions** — replace the character at each position with text (empty text deletes).
+22. **Split file by lines** — N data lines per numbered output chunk (`name_0001.ext`); header lines repeated per chunk.
+23. **Split file by columns** — fixed columns repeated + N data columns per chunk; comment lines pass through to all chunks.
+24. **Split large file** — new chunk when a size (default 100 MB) or line cap (default 1,000,000) is reached; header lines repeated.
+25. **Add column** — prepend/append a constant column and/or metadata columns (`Event label` = file stem, `Filename` = full path, `No` = 1-based ordinal).
+26. **Add text line / Add text block** — insert one or more lines at a 1-based line number (appended when the file is shorter). `^t` = tab.
+27. **Compress files (zip/gz)** — archive each loaded file next to its source using stdlib zipfile/gzip (no external binaries); archives replace the file list for chaining.
+28. **Compress folder (zip/tar.gz)** — folder picker, recursive.
+29. **Decompress files** — dispatch on `.zip`/`.gz`/`.tgz`/`.tar`/`.tar.gz`, extract next to the archive.
 
 ## File Handling — File Menu
 

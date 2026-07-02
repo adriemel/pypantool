@@ -1,5 +1,8 @@
 # PyPanTool — Plain-English Walkthrough
 
+## What Changed
+**2026-07-02** — Fifteen new tools were added, completing the full "Basic tools" menu of the original C++ PanTool. New abilities: thin a time series to one line per 10 minutes, insert/replace characters at fixed positions, add columns or text lines/blocks, search for a string across files and get a match report, split one file into many (by lines, by columns, or by size), and compress/decompress files and folders (zip, gz, tar.gz). Six new processing modules, six new dialogs, and two new background worker types were added; tests grew from 162 to 243.
+
 ---
 
 ## What This App Does
@@ -48,8 +51,12 @@ pypantool/
 ├── main.py                    ← Starts the application
 │
 ├── core/
+│   ├── addcol.py              ← Add a constant column and/or metadata columns
+│   ├── addline.py             ← Insert text lines at a given line number
+│   ├── charpos.py             ← Insert/replace characters at fixed positions
 │   ├── columns.py             ← Extract or delete columns by number or header name
 │   ├── comments.py            ← Delete lines that start with a comment marker (e.g. //)
+│   ├── compress.py            ← Zip/gzip/tar.gz compression and decompression
 │   ├── concat.py              ← Join files vertically (stacked) or horizontally (side-by-side)
 │   ├── duplicates.py          ← Remove duplicate lines, keep first occurrence
 │   ├── filelist.py            ← Export a list of loaded files (name, path, size, date)
@@ -57,7 +64,9 @@ pypantool/
 │   ├── naming.py              ← Resolve output filenames from a pattern like "%N_out%E"
 │   ├── recalc.py              ← Recalculate column values: new = old × factor + offset
 │   ├── rename.py              ← Filename transformation: search/replace, prefix, suffix
-│   └── search_replace.py      ← Find/replace one string or many at once
+│   ├── search_replace.py      ← Find/replace strings; search-report across files
+│   ├── split.py               ← Split one file into many (by lines, columns, or size)
+│   └── timeseries.py          ← Thin a time series to one line per interval
 │
 ├── gui/
 │   ├── main_window.py         ← The main application window
@@ -65,21 +74,28 @@ pypantool/
 │   ├── run_tool.py            ← Wires a dialog's settings to a background worker
 │   ├── style.py               ← All visual styling (slate-blue theme)
 │   ├── worker.py              ← Background threads that do the actual file I/O
-│   └── dialogs/               ← One small dialog per tool (13 dialog files)
+│   └── dialogs/               ← One small dialog per tool (19 dialog files)
 │
 └── tests/
     ├── fixtures/
     │   ├── test_data.txt          ← 35-line realistic oceanographic dataset
-    │   └── test_data_supplement.txt  ← 8-line companion for concat tests
+    │   ├── test_data_supplement.txt  ← 8-line companion for concat tests
+    │   └── test_timeseries.txt    ← 8-line Date/Time dataset for interval thinning
+    ├── test_addcol.py
+    ├── test_addline.py
+    ├── test_charpos.py
     ├── test_columns.py
     ├── test_comments.py
+    ├── test_compress.py
     ├── test_concat.py
     ├── test_duplicates.py
     ├── test_filelist.py
     ├── test_lines.py
     ├── test_recalc.py
     ├── test_rename.py
-    └── test_search_replace.py
+    ├── test_search_replace.py
+    ├── test_split.py
+    └── test_timeseries.py
 ```
 
 ---
@@ -182,6 +198,11 @@ Example: `%N_out%E` applied to `temperature_data.tab` → `temperature_data_out.
 **What it does:** Replaces all occurrences of a search string with a replacement string, in every line, in every loaded file. Not regex — plain text matching.
 **Use case:** Fix a misspelled station name across a hundred files at once.
 
+#### Search one string (report, no replacing)
+**What it does:** Looks for a piece of text in every loaded file and writes a report instead of changing anything. Each match becomes one row: filename, line number, and the full matching line. You can limit the search to a window of lines (start at line X, search Y lines).
+**Why it exists:** Before changing data across many files, you often want to know *where* something appears. This is the "look before you leap" companion to find-and-replace.
+**To change it:** The report's column headers ("Filename", "Line", "String") are set at the top of the function.
+
 #### Many find/replace at once
 **What it does:** Takes an ordered list of (search, replace) pairs and applies them all in sequence. The output of the first replacement feeds into the second, and so on.
 **Why ordered matters:** If you're replacing "A" → "B" and then "B" → "C", the order determines whether the first replacement gets caught by the second.
@@ -237,7 +258,13 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** Renames files in place on disk (no new output file is created). Iterates through the (old path, new path) pairs computed by the dialog preview and calls the operating system rename for each pair. Files whose name would not change are skipped. After all renames succeed, emits the list of new paths so the file list table updates.
 
 **Why all four exist separately:** Their patterns of file access are fundamentally different — one file at a time vs. all at once vs. no file reading at all vs. in-place rename with no content I/O.
-**Things to know:** If an error occurs during processing, the worker catches it and sends an error notification to the window, which shows a message box. No partial output files are left behind. For `RenameWorker`, if a rename fails mid-way (e.g. a file is locked), processing stops and already-renamed files keep their new names.
+#### SplitWorker
+**What it does:** The reverse of ConcatWorker — one input file becomes many numbered output files. The processing function tags every line with a chunk number, and the worker opens `name_0001.ext`, `name_0002.ext`, … as those numbers first appear. For line-based splits it keeps only one output open at a time; for column splits (where every input line feeds all outputs) it keeps them all open until the file ends.
+
+#### CompressWorker
+**What it does:** Runs a file-level operation — compress or decompress — on each path in the list, one at a time, in the background. Unlike the other workers it never reads lines; the compression functions handle the bytes themselves.
+
+**Things to know:** If an error occurs during processing, the worker catches it and sends an error notification to the window, which shows a message box. No partial output files are left behind. For `RenameWorker`, if a rename fails mid-way (e.g. a file is locked), processing stops and already-renamed files keep their new names. `ProcessWorker` has an opt-in `pass_path` switch that hands the current file's path to the processing function — only Add Column uses it, for its filename/path columns.
 
 ---
 
@@ -252,6 +279,8 @@ Settings are saved automatically in the Windows registry and remembered across s
 6. When it's done, replaces the file list with the output files (enabling tool chaining)
 
 **Why it exists:** Without this, every dialog would have to duplicate the same wiring code. This puts it in one place.
+
+**Things to know:** There is one `run_…` helper per worker type: `run_tool` (one output per input), `run_concat` (many inputs, one output — also used by Search One String, which is allowed to run on a single file), `run_split` (one input, many outputs), `run_rename`, `run_filelist`, and `run_compress`. All follow the same shape: build the worker, connect its signals to the status bar, start it, and update the file list when it finishes.
 
 ---
 
@@ -269,7 +298,7 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** After a tool runs, the output files automatically replace the input files in the list. Running another tool immediately processes the output of the previous one. The `%a` counter in the filename pattern increments with each run, so outputs are named `data_out_1.txt`, `data_out_2.txt`, etc.
 
 #### Menus
-**What it does:** The Tools menu has 17 items, one per tool. Clicking any of them opens the corresponding small dialog. File menu has Open, Open Folder, Clear, Options, and Quit. Help menu has About.
+**What it does:** The Tools menu has 32 items, one per tool — the complete "Basic tools" set of the original PanTool. Most open a small dialog; the compression entries act immediately (the folder variants open a folder picker). File menu has Open, Open Folder, Clear, Options, and Quit. Help menu has About.
 
 **Things to know:** Each menu item's dialog is only loaded from disk when you click it (not at startup). This keeps the app fast to launch.
 
@@ -290,7 +319,48 @@ Settings are saved automatically in the Windows registry and remembered across s
 
 ---
 
-### `gui/dialogs/` — Tool Dialogs (13 files)
+### `core/timeseries.py` — Time-Series Thinning ("Extract 10 min Lines")
+**What it does:** Reduces a dense time series (e.g. a sensor logging every 10 seconds) to one line per interval — 10 minutes by default. It finds the `Date/Time` column in the header, then walks through the file keeping a line only when enough time has passed since the last kept line. The first and last data lines are always kept.
+**Why it exists:** Instruments often record far more frequently than an archive needs. This shrinks a file dramatically while preserving the shape of the data.
+**Things to know:** Timestamps must be ISO format like `2024-01-15T08:30:00` (seconds and milliseconds optional). A malformed timestamp doesn't stop the run — an error-marker line is written in its place, matching the original PanTool. The interval is adjustable in the dialog.
+
+---
+
+### `core/charpos.py` — Characters at Fixed Positions
+**What it does:** Two operations for fixed-width data: *insert* pushes text in before given character positions (turning `abcdef` with positions "3,5" and text "-" into `ab-cd-ef`); *replace* overwrites the single character at each position (positions "2-4" with `_` turns `abcdef` into `a___ef`). Positions count from 1 and accept ranges.
+**Why it exists:** Some instrument files have no delimiters at all — values sit at fixed character positions. This is how you add tabs to such files (insert `^t`) or blank out a fixed-width field.
+**Things to know:** Replacing with empty text deletes characters. Positions beyond a line's end simply append the text. `^t` in the dialog becomes a tab.
+
+---
+
+### `core/addcol.py` — Add Column
+**What it does:** Adds one or both of: a constant text column (header text on line 1, a repeated value on every data line), and metadata columns — the file's name (header `Event label`), its full path (header `Filename`), and/or a running line number (header `No`). Each block can go at the front or the end of every line.
+**Why it exists:** Before concatenating many station files into one, you usually need a column saying which file each row came from.
+**Things to know:** This is the one tool whose core function also receives the file's path (the worker passes it in), because the filename column differs per file.
+
+---
+
+### `core/addline.py` — Add Text Line / Block
+**What it does:** Inserts one line (or a multi-line block) so it starts at a given line number. If the file is shorter than that, the text lands at the end.
+**Why it exists:** Adding a missing header line, or a comment block with licence/citation text, across hundreds of files at once.
+
+---
+
+### `core/split.py` — Splitting One File into Many
+**What it does:** Three ways to break a file apart. *By lines*: every N data lines start a new file. *By size*: a new file starts when the current one reaches a size cap (default 100 MB) or a line cap (default 1 million). *By columns*: each output file gets a slice of N data columns, optionally with "fixed" columns (like station and date) repeated in front of every slice.
+**Why it exists:** Some programs (or email attachments, or upload forms) can't handle a 700 MB file. Splitting with repeated headers keeps every piece usable on its own.
+**Things to know:** Output pieces are numbered `name_0001.ext`, `name_0002.ext`, … next to the input. Header lines are repeated at the top of every piece. For column splits, comment lines (no delimiter) are copied into every piece.
+
+---
+
+### `core/compress.py` — Compression and Decompression
+**What it does:** Compresses each loaded file to a `.zip` or `.gz` archive next to it, packs a whole folder into `.zip` or `.tar.gz`, and decompresses archives (`.zip`, `.gz`, `.tar`, `.tar.gz`) back into their folder.
+**Why it exists:** Data curation ends with archiving. The original PanTool searched your computer for an external zip program; this version uses Python's built-in libraries, so it always works.
+**Things to know:** Data is copied in 1 MB chunks, so even a 700 MB file compresses without memory pressure. Existing archives with the same name are overwritten. Decompressing replaces the file list with the extracted files, so you can chain straight into processing them.
+
+---
+
+### `gui/dialogs/` — Tool Dialogs (19 files)
 
 Each tool has its own small dialog. They all follow the same pattern: a short form collecting the tool's parameters, an OK button that validates input and launches the worker, and a Cancel button. None of them contain processing logic — they just collect settings and pass them to `run_tool.py`.
 
@@ -311,17 +381,26 @@ Here's a quick reference:
 | `FilelistDialog` | No settings — just confirm |
 | `RecalcDialog` | Column spec, factor, offset, number of header lines to skip |
 | `RenameDialog` | Search/replace in filename, prefix, suffix; shows live old→new preview table |
+| `TimeseriesDialog` | Thinning interval in seconds (default 600); keep-header option |
+| `CharPosDialog` | Character positions like "5,10-12"; text to insert or substitute; insert or replace mode |
+| `AddColumnDialog` | Header/column text with prepend/append choice; filename, path, and line-number metadata columns |
+| `AddLineDialog` | Single line or multi-line block; line number where the text goes |
+| `SearchOneDialog` | Search text; start line; number of lines to search (0 = all) |
+| `SplitDialog` | Lines per file, size/line caps, or columns per file + fixed columns — depending on mode |
+
+The compression tools have no dialogs: compress/decompress act directly on the loaded files, and the folder variants open a standard folder picker.
 
 ---
 
 ### `tests/` — Automated Tests
 
-**What it does:** 162 tests that verify the core processing functions work correctly. They run automatically (e.g., with `pytest`) and take under a second. No GUI is involved.
+**What it does:** 243 tests that verify the core processing functions work correctly. They run automatically (e.g., with `pytest`) and take under a second. No GUI is involved.
 
 #### Test fixtures
-**What it does:** Two realistic data files that all tests use as input:
+**What it does:** Three realistic data files that all tests use as input:
 - `test_data.txt` — 35 lines of oceanographic CTD data (station codes, depths, temperatures, salinity, etc.) including comment lines, a blank line, adjacent duplicates, and non-adjacent duplicates — all the edge cases the code needs to handle.
 - `test_data_supplement.txt` — 8 extra lines used for testing file concatenation.
+- `test_timeseries.txt` — 8 lines with a `Date/Time` column in mixed ISO formats, spacings around the 10-minute threshold, and one deliberately malformed timestamp.
 
 **Why use realistic data instead of made-up data:** Real data has realistic quirks — special characters in column headers (`[°C]`), missing values, mixed-content lines — that made-up data might not cover.
 
@@ -334,7 +413,13 @@ Here's a quick reference:
 - `test_lines.py` (23 tests): All spec formats, matched line extraction, regex patterns, complement property.
 - `test_recalc.py` (12 tests): Factor, offset, combined formula, multi-column ranges, non-numeric passthrough, header skipping, custom delimiter, integer vs. float formatting.
 - `test_rename.py` (14 tests): Search/replace, prefix, suffix, combined operations, filesystem not modified by preview, empty file list.
-- `test_search_replace.py` (20 tests): All occurrences replaced, replacement ordering, empty search values skipped, database loading.
+- `test_search_replace.py` (29 tests): All occurrences replaced, replacement ordering, empty search values skipped, database loading, search-report rows with correct filenames and line numbers.
+- `test_timeseries.py` (11 tests): Column detection, thinning at different intervals, malformed timestamps, first/last line guarantees.
+- `test_charpos.py` (15 tests): Position spec parsing, insert/replace at single positions and ranges, past-end behavior, deletion via empty text.
+- `test_addcol.py` (11 tests): Text columns front and back, metadata columns, ordinal numbering, combined blocks, custom delimiter.
+- `test_addline.py` (8 tests): Insert at top/middle/past-end, multi-line blocks, empty input.
+- `test_split.py` (22 tests): Even and remainder chunks, repeated headers, size and line caps, fixed columns, comment pass-through, chunk counts.
+- `test_compress.py` (7 tests): Zip/gzip/tar.gz roundtrips for files and folders — compress, delete the original, decompress, and confirm the bytes are identical.
 
 ---
 
