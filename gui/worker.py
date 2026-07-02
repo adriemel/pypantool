@@ -46,6 +46,7 @@ class ProcessWorker(QThread):
         process_fn: Callable[[Iterable[str]], Iterator[str]],
         in_encoding: str = "UTF-8",
         out_encoding: str = "UTF-8",
+        pass_path: bool = False,
         parent: Any = None,
     ) -> None:
         """
@@ -56,12 +57,16 @@ class ProcessWorker(QThread):
                          with ``functools.partial`` before passing here.
             in_encoding: Encoding used to open input files.
             out_encoding: Encoding used to write output files.
+            pass_path:   When ``True``, the current input path is passed as a
+                         second positional argument to *process_fn* (used by
+                         tools that embed file metadata, e.g. Add Column).
         """
         super().__init__(parent)
         self._jobs = jobs
         self._process_fn = process_fn
         self._in_encoding = in_encoding
         self._out_encoding = out_encoding
+        self._pass_path = pass_path
 
     # ── QThread entry point ───────────────────────────────────────────────────
 
@@ -85,7 +90,11 @@ class ProcessWorker(QThread):
             open(in_path, encoding=self._in_encoding, errors="replace") as fh_in,
             open(out_path, "w", encoding=self._out_encoding, newline="") as fh_out,
         ):
-            for out_line in self._process_fn(_stripped_lines(fh_in)):
+            if self._pass_path:
+                out_lines = self._process_fn(_stripped_lines(fh_in), in_path)
+            else:
+                out_lines = self._process_fn(_stripped_lines(fh_in))
+            for out_line in out_lines:
                 fh_out.write(out_line + "\n")
                 line_count += 1
                 if line_count % self.PROGRESS_INTERVAL == 0:

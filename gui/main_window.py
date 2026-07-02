@@ -148,6 +148,7 @@ class MainWindow(QMainWindow):
         self._tools_menu.addSeparator()
         self._add_tool("&Extract Lines…", self._run_extract_lines)
         self._add_tool("Extract &Matched Lines…", self._run_extract_matched_lines)
+        self._add_tool("Extract 10 min L&ines…", self._run_extract_10min_lines)
         self._tools_menu.addSeparator()
         self._add_tool("&Delete Lines…", self._run_delete_lines)
         self._add_tool("Delete M&atched Lines…", self._run_delete_matched_lines)
@@ -160,6 +161,13 @@ class MainWindow(QMainWindow):
         self._tools_menu.addSeparator()
         self._add_tool("&Search and Replace…", self._run_search_replace)
         self._add_tool("Search and Replace &Many…", self._run_search_replace_many)
+        self._tools_menu.addSeparator()
+        self._add_tool("&Insert Characters at Positions…", self._run_insert_chars)
+        self._add_tool("Replace Charac&ters at Positions…", self._run_replace_chars)
+        self._tools_menu.addSeparator()
+        self._add_tool("Add Colum&n…", self._run_add_column)
+        self._add_tool("Add Text L&ine…", self._run_add_line)
+        self._add_tool("Add Text &Block…", self._run_add_block)
         self._tools_menu.addSeparator()
         self._add_tool("Save &File List…", self._run_save_filelist)
         self._tools_menu.addSeparator()
@@ -358,6 +366,30 @@ class MainWindow(QMainWindow):
     def _run_delete_matched_lines(self) -> None:
         from gui.dialogs.matched_lines_dialog import MatchedLinesDialog
         MatchedLinesDialog(self, mode="delete").exec()
+
+    def _run_extract_10min_lines(self) -> None:
+        from gui.dialogs.timeseries_dialog import TimeseriesDialog
+        TimeseriesDialog(self).exec()
+
+    def _run_insert_chars(self) -> None:
+        from gui.dialogs.charpos_dialog import CharPosDialog
+        CharPosDialog(self, mode="insert").exec()
+
+    def _run_replace_chars(self) -> None:
+        from gui.dialogs.charpos_dialog import CharPosDialog
+        CharPosDialog(self, mode="replace").exec()
+
+    def _run_add_column(self) -> None:
+        from gui.dialogs.addcol_dialog import AddColumnDialog
+        AddColumnDialog(self).exec()
+
+    def _run_add_line(self) -> None:
+        from gui.dialogs.addline_dialog import AddLineDialog
+        AddLineDialog(self, mode="line").exec()
+
+    def _run_add_block(self) -> None:
+        from gui.dialogs.addline_dialog import AddLineDialog
+        AddLineDialog(self, mode="block").exec()
 
     def _run_delete_comments(self) -> None:
         from gui.dialogs.comments_dialog import CommentsDialog

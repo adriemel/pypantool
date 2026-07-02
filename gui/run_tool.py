@@ -22,6 +22,7 @@ def run_tool(
     main_window,
     process_fn: Callable[[Iterable[str]], Iterator[str]],
     label: str,
+    pass_path: bool = False,
 ) -> None:
     """Build jobs from *main_window*'s file list, create a worker, and start it.
 
@@ -31,6 +32,8 @@ def run_tool(
                      ``functools.partial``.  Signature must be
                      ``(Iterable[str]) -> Iterator[str]``.
         label:       Short human-readable operation name shown in the status bar.
+        pass_path:   Forwarded to :class:`~gui.worker.ProcessWorker`; when
+                     ``True`` the core function also receives the input path.
     """
     settings = main_window.current_settings()
     counter = main_window.run_counter
@@ -46,6 +49,7 @@ def run_tool(
         process_fn=process_fn,
         in_encoding=settings["in_encoding"],
         out_encoding=settings["out_encoding"],
+        pass_path=pass_path,
     )
 
     def _on_file_started(idx: int, total: int, name: str) -> None:
