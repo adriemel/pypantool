@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from core.naming import resolve_output_path
 from gui.worker import (
+    CompressWorker,
     ConcatWorker,
     FilelistWorker,
     ProcessWorker,
@@ -167,6 +168,47 @@ def run_split(
         main_window.increment_run_counter()
         main_window.replace_files(created)
         main_window.set_idle(f"Done — {len(created)} file(s) written")
+
+    worker.file_started.connect(_on_file_started)
+    worker.error.connect(_on_error)
+    worker.all_done.connect(_on_done)
+
+    main_window.attach_worker(worker)
+
+
+def run_compress(
+    main_window,
+    file_fn: Callable[[Path], "Path | list[Path]"],
+    label: str,
+    paths: list[Path] | None = None,
+    replace_list: bool = True,
+) -> None:
+    """Apply a file-level operation (compress/decompress) to *paths*.
+
+    Args:
+        main_window:  The :class:`~gui.main_window.MainWindow` instance.
+        file_fn:      Operation applied to each path; returns the produced
+                      path or list of paths.
+        label:        Short operation name shown in the status bar.
+        paths:        Files to process; defaults to the loaded file list.
+        replace_list: When ``True``, the produced paths replace the loaded
+                      file list (chaining); otherwise the list is kept.
+    """
+    targets = paths if paths is not None else main_window.files
+
+    worker = CompressWorker(paths=targets, file_fn=file_fn)
+
+    def _on_file_started(idx: int, total: int, name: str) -> None:
+        main_window.set_busy(f"{label}: {name} ({idx}/{total})")
+
+    def _on_error(msg: str) -> None:
+        main_window.set_idle()
+        QMessageBox.warning(main_window, "Error", msg)
+
+    def _on_done(produced: list) -> None:
+        if replace_list:
+            main_window.replace_files(produced)
+        main_window.set_idle(f"Done — {len(produced)} file(s) produced")
 
     worker.file_started.connect(_on_file_started)
     worker.error.connect(_on_error)

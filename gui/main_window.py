@@ -177,6 +177,12 @@ class MainWindow(QMainWindow):
         self._add_tool("Save &File List…", self._run_save_filelist)
         self._tools_menu.addSeparator()
         self._add_tool("Re&name Files…", self._run_rename_files)
+        self._tools_menu.addSeparator()
+        self._add_tool("Compress Files (&zip)", self._run_compress_files_zip)
+        self._add_tool("Compress Files (&gz)", self._run_compress_files_gzip)
+        self._add_tool("Compress Folder (zip)…", self._run_compress_folder_zip)
+        self._add_tool("Compress Folder (tar.gz)…", self._run_compress_folder_targz)
+        self._add_tool("Decompress Files", self._run_decompress_files)
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = menubar.addMenu("&Help")
@@ -447,6 +453,38 @@ class MainWindow(QMainWindow):
     def _run_rename_files(self) -> None:
         from gui.dialogs.rename_dialog import RenameDialog
         RenameDialog(self).exec()
+
+    def _run_compress_files_zip(self) -> None:
+        from core.compress import compress_file_zip
+        from gui.run_tool import run_compress
+        run_compress(self, compress_file_zip, "Compress (zip)")
+
+    def _run_compress_files_gzip(self) -> None:
+        from core.compress import compress_file_gzip
+        from gui.run_tool import run_compress
+        run_compress(self, compress_file_gzip, "Compress (gz)")
+
+    def _run_compress_folder_zip(self) -> None:
+        self._compress_folder(mode="zip")
+
+    def _run_compress_folder_targz(self) -> None:
+        self._compress_folder(mode="targz")
+
+    def _compress_folder(self, mode: str) -> None:
+        from core.compress import compress_folder_targz, compress_folder_zip
+        from gui.run_tool import run_compress
+
+        folder = QFileDialog.getExistingDirectory(self, "Select folder to compress")
+        if not folder:
+            return
+        fn = compress_folder_zip if mode == "zip" else compress_folder_targz
+        label = "Compress folder (zip)" if mode == "zip" else "Compress folder (tar.gz)"
+        run_compress(self, fn, label, paths=[Path(folder)], replace_list=False)
+
+    def _run_decompress_files(self) -> None:
+        from core.compress import decompress_file
+        from gui.run_tool import run_compress
+        run_compress(self, decompress_file, "Decompress")
 
     # ── System dialogs ─────────────────────────────────────────────────────────
 

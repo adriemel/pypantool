@@ -4,6 +4,7 @@
 ``ConcatWorker``    — all input files merged into one output file.
 ``FilelistWorker``  — emit file metadata to one output file (no file reading).
 ``SplitWorker``     — one input file fanned out into numbered output chunks.
+``CompressWorker``  — apply a file-level operation (compress/decompress) per path.
 """
 
 import contextlib
@@ -328,6 +329,47 @@ class RenameWorker(QThread):
             self.file_renamed.emit(idx, total, old_path.name, new_path)
             new_paths.append(new_path)
         self.all_done.emit(new_paths)
+
+
+class CompressWorker(QThread):
+    """Apply a file-level operation to each path in a background thread.
+
+    The *file_fn* receives one :class:`~pathlib.Path` and returns the produced
+    path or a list of produced paths (compression returns the archive,
+    decompression may return several extracted files).
+
+    Signals:
+        file_started(int, int, str): (1-based index, total, file name).
+        all_done(list):              Every produced Path, in order.
+        error(str):                  Error message; processing stopped.
+    """
+
+    file_started = Signal(int, int, str)
+    all_done = Signal(list)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        paths: list[Path],
+        file_fn: Callable[[Path], Path | list[Path]],
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self._paths = paths
+        self._file_fn = file_fn
+
+    def run(self) -> None:
+        total = len(self._paths)
+        produced: list[Path] = []
+        for idx, path in enumerate(self._paths, start=1):
+            self.file_started.emit(idx, total, path.name)
+            try:
+                result = self._file_fn(path)
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(f"{path.name}: {exc}")
+                return
+            produced.extend(result if isinstance(result, list) else [result])
+        self.all_done.emit(produced)
 
 
 def _stripped_lines(fh: Iterable[str]) -> Iterator[str]:
