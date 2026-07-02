@@ -3,6 +3,7 @@
 ``search_replace_one``  — replace a single search string across all lines.
 ``search_replace_many`` — apply a list of (search, replace) pairs in order.
 ``load_replacements``   — parse a replacement-database line stream into pairs.
+``search_one_string``   — report every match across many files (no replacing).
 """
 
 from collections.abc import Iterable, Iterator
@@ -54,6 +55,46 @@ def search_replace_many(
         for search, replace in active:
             line = line.replace(search, replace)
         yield line
+
+
+def search_one_string(
+    inputs: Iterable[tuple[str, Iterable[str]]],
+    search: str,
+    start_line: int = 1,
+    num_lines: int = 0,
+    delimiter: str = "\t",
+) -> Iterator[str]:
+    """Report every line containing *search* across multiple files.
+
+    Produces a delimited report with a header row followed by one row per
+    match: filename, 1-based line number, and the matching line.
+
+    Args:
+        inputs:     Iterable of ``(filename, line_stream)`` pairs.
+        search:     Substring to look for (plain match, not regex).
+        start_line: 1-based line number where the search starts in each file.
+        num_lines:  Number of lines to search per file; 0 searches to the end.
+        delimiter:  Column separator for the report.
+
+    Raises:
+        ValueError: If *search* is empty or *start_line* is below 1.
+    """
+    if not search:
+        raise ValueError("Search string must not be empty.")
+    if start_line < 1:
+        raise ValueError("Start line must be 1 or greater.")
+
+    yield delimiter.join(("Filename", "Line", "String"))
+
+    end_line = start_line + num_lines - 1 if num_lines > 0 else None
+    for name, lines in inputs:
+        for lineno, line in enumerate(lines, start=1):
+            if lineno < start_line:
+                continue
+            if end_line is not None and lineno > end_line:
+                break
+            if search in line:
+                yield delimiter.join((name, str(lineno), line))
 
 
 def load_replacements(

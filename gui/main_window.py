@@ -159,6 +159,11 @@ class MainWindow(QMainWindow):
         self._add_tool("Concatenate by &Lines…", self._run_concat_lines)
         self._add_tool("Concatenate by C&olumns…", self._run_concat_columns)
         self._tools_menu.addSeparator()
+        self._add_tool("Split by Line&s…", self._run_split_lines)
+        self._add_tool("Split by Colu&mns…", self._run_split_columns)
+        self._add_tool("Split Lar&ge File…", self._run_split_large)
+        self._tools_menu.addSeparator()
+        self._add_tool("Search &One String…", self._run_search_one)
         self._add_tool("&Search and Replace…", self._run_search_replace)
         self._add_tool("Search and Replace &Many…", self._run_search_replace_many)
         self._tools_menu.addSeparator()
@@ -406,6 +411,22 @@ class MainWindow(QMainWindow):
     def _run_concat_columns(self) -> None:
         from gui.dialogs.concat_columns_dialog import ConcatColumnsDialog
         ConcatColumnsDialog(self).exec()
+
+    def _run_split_lines(self) -> None:
+        from gui.dialogs.split_dialog import SplitDialog
+        SplitDialog(self, mode="lines").exec()
+
+    def _run_split_columns(self) -> None:
+        from gui.dialogs.split_dialog import SplitDialog
+        SplitDialog(self, mode="columns").exec()
+
+    def _run_split_large(self) -> None:
+        from gui.dialogs.split_dialog import SplitDialog
+        SplitDialog(self, mode="large").exec()
+
+    def _run_search_one(self) -> None:
+        from gui.dialogs.search_one_dialog import SearchOneDialog
+        SearchOneDialog(self).exec()
 
     def _run_search_replace(self) -> None:
         from gui.dialogs.search_replace_dialog import SearchReplaceDialog

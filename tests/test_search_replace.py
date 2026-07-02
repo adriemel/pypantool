@@ -6,7 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.search_replace import load_replacements, search_replace_many, search_replace_one
+from core.search_replace import (
+    load_replacements,
+    search_one_string,
+    search_replace_many,
+    search_replace_one,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "test_data.txt"
 
@@ -153,6 +158,51 @@ class TestLoadReplacements(unittest.TestCase):
         lines = ["remove\t"]
         result = load_replacements(lines)
         self.assertEqual(result, [("remove", "")])
+
+
+# ── search_one_string ─────────────────────────────────────────────────────────
+
+class TestSearchOneString(unittest.TestCase):
+
+    def test_header_row_first(self):
+        result = list(search_one_string([("f.txt", ALL_LINES)], "PS001"))
+        self.assertEqual(result[0], "Filename\tLine\tString")
+
+    def test_reports_all_matches_with_line_numbers(self):
+        result = list(search_one_string([("f.txt", ALL_LINES)], "PS001"))
+        self.assertEqual(len(result), 1 + PS001_COUNT)
+        for row in result[1:]:
+            name, lineno, line = row.split("\t", 2)
+            self.assertEqual(name, "f.txt")
+            self.assertEqual(ALL_LINES[int(lineno) - 1], line)
+
+    def test_multiple_files(self):
+        result = list(search_one_string(
+            [("a.txt", ["x", "hit"]), ("b.txt", ["hit", "y"])], "hit",
+        ))
+        self.assertEqual(result[1], "a.txt\t2\thit")
+        self.assertEqual(result[2], "b.txt\t1\thit")
+
+    def test_start_line_window(self):
+        result = list(search_one_string(
+            [("f", ["hit", "hit", "hit", "hit"])], "hit",
+            start_line=2, num_lines=2,
+        ))
+        self.assertEqual(len(result), 3)  # header + lines 2 and 3
+        self.assertEqual(result[1], "f\t2\thit")
+        self.assertEqual(result[2], "f\t3\thit")
+
+    def test_no_match_yields_header_only(self):
+        result = list(search_one_string([("f", ["a", "b"])], "zzz"))
+        self.assertEqual(result, ["Filename\tLine\tString"])
+
+    def test_empty_search_raises(self):
+        with self.assertRaises(ValueError):
+            list(search_one_string([("f", ["a"])], ""))
+
+    def test_invalid_start_line_raises(self):
+        with self.assertRaises(ValueError):
+            list(search_one_string([("f", ["a"])], "a", start_line=0))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 ``ProcessWorker``   — one output per input file (standard tools).
 ``ConcatWorker``    — all input files merged into one output file.
 ``FilelistWorker``  — emit file metadata to one output file (no file reading).
+``SplitWorker``     — one input file fanned out into numbered output chunks.
 """
 
 import contextlib
@@ -205,6 +206,91 @@ class FilelistWorker(QThread):
             self.done.emit(self._out_path)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
+
+
+class SplitWorker(QThread):
+    """Fan each input file out into numbered chunk files.
+
+    The *process_fn* has signature ``(Iterable[str]) -> Iterator[tuple[int, str]]``
+    and yields ``(1-based chunk index, line)`` pairs.  Chunk *k* of input
+    ``data.tab`` is written to ``data_000k.tab`` next to the input.
+
+    When *sequential* is ``True`` (line-based splits), chunk indices are
+    monotonic and each chunk file is closed as soon as the next one starts, so
+    only one output is open at a time.  When ``False`` (column splits), all
+    chunk files stay open until the input is exhausted.
+
+    Signals:
+        file_started(int, int, str): (1-based input index, total inputs, name).
+        line_progress(int):          Lines written so far for the current input.
+        all_done(list):              Every chunk Path created, in creation order.
+        error(str):                  Error message; processing stopped.
+    """
+
+    file_started = Signal(int, int, str)
+    line_progress = Signal(int)
+    all_done = Signal(list)
+    error = Signal(str)
+
+    PROGRESS_INTERVAL = 5_000
+
+    def __init__(
+        self,
+        in_paths: list[Path],
+        process_fn: Callable[[Iterable[str]], Iterator[tuple[int, str]]],
+        sequential: bool = True,
+        in_encoding: str = "UTF-8",
+        out_encoding: str = "UTF-8",
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self._in_paths = in_paths
+        self._process_fn = process_fn
+        self._sequential = sequential
+        self._in_encoding = in_encoding
+        self._out_encoding = out_encoding
+
+    def run(self) -> None:
+        total = len(self._in_paths)
+        created: list[Path] = []
+        for idx, in_path in enumerate(self._in_paths, start=1):
+            self.file_started.emit(idx, total, in_path.name)
+            try:
+                created.extend(self._split_one(in_path))
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(f"{in_path.name}: {exc}")
+                return
+        self.all_done.emit(created)
+
+    def _split_one(self, in_path: Path) -> list[Path]:
+        created: list[Path] = []
+        line_count = 0
+        with (
+            open(in_path, encoding=self._in_encoding, errors="replace") as fh_in,
+            contextlib.ExitStack() as stack,
+        ):
+            handles: dict[int, Any] = {}
+            for chunk_idx, line in self._process_fn(_stripped_lines(fh_in)):
+                fh = handles.get(chunk_idx)
+                if fh is None:
+                    if self._sequential:
+                        for open_fh in handles.values():
+                            open_fh.close()
+                        handles.clear()
+                    out_path = in_path.with_name(
+                        f"{in_path.stem}_{chunk_idx:04d}{in_path.suffix}"
+                    )
+                    fh = stack.enter_context(
+                        open(out_path, "w", encoding=self._out_encoding, newline="")
+                    )
+                    handles[chunk_idx] = fh
+                    created.append(out_path)
+                fh.write(line + "\n")
+                line_count += 1
+                if line_count % self.PROGRESS_INTERVAL == 0:
+                    self.line_progress.emit(line_count)
+        self.line_progress.emit(line_count)
+        return created
 
 
 class RenameWorker(QThread):

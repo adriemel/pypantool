@@ -15,7 +15,13 @@ from pathlib import Path
 from PySide6.QtWidgets import QMessageBox
 
 from core.naming import resolve_output_path
-from gui.worker import ConcatWorker, FilelistWorker, ProcessWorker, RenameWorker
+from gui.worker import (
+    ConcatWorker,
+    FilelistWorker,
+    ProcessWorker,
+    RenameWorker,
+    SplitWorker,
+)
 
 
 def run_tool(
@@ -75,6 +81,7 @@ def run_concat(
     main_window,
     process_fn: Callable[[Iterable[tuple[str, Iterable[str]]]], Iterator[str]],
     label: str,
+    min_files: int = 2,
 ) -> None:
     """Merge all loaded files into one output using a concat core function.
 
@@ -84,10 +91,15 @@ def run_concat(
                      ``functools.partial``.  Signature must be
                      ``(Iterable[tuple[str, Iterable[str]]]) -> Iterator[str]``.
         label:       Short operation name shown in the status bar.
+        min_files:   Minimum number of loaded files required (2 for true
+                     concatenation, 1 for report tools like Search One String).
     """
     in_paths = main_window.files
-    if len(in_paths) < 2:
-        QMessageBox.warning(main_window, label, "At least two files are required.")
+    if len(in_paths) < min_files:
+        QMessageBox.warning(
+            main_window, label,
+            f"At least {min_files} file(s) are required.",
+        )
         return
 
     settings = main_window.current_settings()
@@ -113,6 +125,52 @@ def run_concat(
     main_window.set_busy(label)
     worker.error.connect(_on_error)
     worker.done.connect(_on_done)
+
+    main_window.attach_worker(worker)
+
+
+def run_split(
+    main_window,
+    process_fn: Callable[[Iterable[str]], Iterator[tuple[int, str]]],
+    label: str,
+    sequential: bool = True,
+) -> None:
+    """Split every loaded file into numbered chunk files.
+
+    Args:
+        main_window: The :class:`~gui.main_window.MainWindow` instance.
+        process_fn:  Split function already bound with parameters via
+                     ``functools.partial``.  Signature must be
+                     ``(Iterable[str]) -> Iterator[tuple[int, str]]``.
+        label:       Short operation name shown in the status bar.
+        sequential:  ``True`` when chunk indices are monotonic (line splits);
+                     ``False`` when chunks interleave (column splits).
+    """
+    settings = main_window.current_settings()
+
+    worker = SplitWorker(
+        in_paths=main_window.files,
+        process_fn=process_fn,
+        sequential=sequential,
+        in_encoding=settings["in_encoding"],
+        out_encoding=settings["out_encoding"],
+    )
+
+    def _on_file_started(idx: int, total: int, name: str) -> None:
+        main_window.set_busy(f"{label}: {name} ({idx}/{total})")
+
+    def _on_error(msg: str) -> None:
+        main_window.set_idle()
+        QMessageBox.warning(main_window, "Error", msg)
+
+    def _on_done(created: list) -> None:
+        main_window.increment_run_counter()
+        main_window.replace_files(created)
+        main_window.set_idle(f"Done — {len(created)} file(s) written")
+
+    worker.file_started.connect(_on_file_started)
+    worker.error.connect(_on_error)
+    worker.all_done.connect(_on_done)
 
     main_window.attach_worker(worker)
 
