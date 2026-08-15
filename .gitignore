@@ -25,3 +25,6 @@ env/
 # IDE
 .vscode/
 .idea/
+
+# Nested repo (reference copy, not tracked as submodule)
+PanTool_Original_C++/
