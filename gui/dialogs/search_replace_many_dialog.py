@@ -91,6 +91,19 @@ class SearchReplaceManyDialog(QDialog):
             )
             return
 
+        missing = [p for p in self._mw.files if not p.is_file()]
+        if missing:
+            listing = "\n".join(str(p) for p in missing)
+            QMessageBox.warning(
+                self, "File not found",
+                "The following loaded file(s) no longer exist on disk and "
+                "cannot be processed:\n\n"
+                f"{listing}\n\n"
+                "They may have been moved, renamed, or deleted since being "
+                "loaded. Please reload them via File › Open or Select folder."
+            )
+            return
+
         self.accept()
         run_tool(
             self._mw,
