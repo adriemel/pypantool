@@ -59,7 +59,7 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 8. **Delete matched lines** — line contains string or matches regex
 9. **Delete comment blocks** — remove lines starting with a configurable prefix (default `//`)
 10. **Delete double lines** — remove duplicate lines (keep first occurrence)
-11. **Concatenate files by columns** — merge files side-by-side (same row count required). Options: skip N header lines, include filename in first row.
+11. **Concatenate files by columns** — merge files side-by-side into `Concatenate_columns_out.<ext>` (auto-numbered; same row count required). Options: skip N header lines, include filename in first row.
 12. **Concatenate files by lines** — append files top-to-bottom into `Concatenate_out.<ext>` (auto-numbered, never overwrites). Options: N header lines (kept once), filename stem as column 1 (`Filename` on the header line; comment/empty lines untouched), skip empty lines, skip comment lines, move inputs to recycle bin after success.
 13. **Save file list** — export loaded file metadata (path, name, size, date) to a text file.
 14. **Search and replace one string** - allows to search and replace a string in multiple files at once
@@ -67,7 +67,7 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 16. **Recalculate columns** — apply `new = old × factor + offset` to selected columns (same spec syntax as extract/delete). Non-numeric values and configurable number of header lines pass through unchanged.
 17. **Rename files** — bulk in-place rename with search/replace in filename, prefix, and suffix (suffix inserts before extension). Dialog shows a live old→new preview before executing.
 18. **Extract 10 min lines** — time-series thinning: keep one line per interval (default 600 s) based on the ISO-format `Date/Time` column. First and last data lines are always kept; malformed timestamps produce an error-marker line.
-19. **Search one string** — report every match across all loaded files as `Filename / Line / String` rows (works with a single file). Options: start line, number of lines.
+19. **Search one string** — report every match across all loaded files as `Filename / Line / String` rows into `Search_out.<ext>` (auto-numbered; works with a single file). Options: start line, number of lines.
 20. **Insert characters at positions** — insert text before each 1-based character position (`5,10-12` spec syntax) in every line. `^t` = tab.
 21. **Replace characters at positions** — replace the character at each position with text (empty text deletes).
 22. **Split file by lines** — N data lines per numbered output chunk (`name_0001.ext`); header lines repeated per chunk.

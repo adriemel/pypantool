@@ -47,7 +47,8 @@ class ConcatColumnsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(
             QLabel(
-                "Merge all loaded files side-by-side into one output file.\n"
+                "Merge all loaded files side-by-side into Concatenate_columns_out.<ext>\n"
+                "in the folder of the first file.\n"
                 "All files must have the same number of rows."
             )
         )
@@ -65,4 +66,4 @@ class ConcatColumnsDialog(QDialog):
             skip_header_lines=self._skip.value(),
             include_filename_row=self._include_filename_row.isChecked(),
         )
-        run_concat(self._mw, fn, "Concat by columns")
+        run_concat(self._mw, fn, "Concat by columns", out_stem="Concatenate_columns_out")

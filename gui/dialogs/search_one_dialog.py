@@ -53,7 +53,8 @@ class SearchOneDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
             "Writes a report of every match in all loaded files:\n"
-            "one row per match with filename, line number, and the line."
+            "one row per match with filename, line number, and the line.\n"
+            "Written to Search_out.<ext> in the folder of the first file."
         ))
         layout.addLayout(form)
         layout.addWidget(buttons)
@@ -79,4 +80,5 @@ class SearchOneDialog(QDialog):
             ),
             "Search one string",
             min_files=1,
+            out_stem="Search_out",
         )
