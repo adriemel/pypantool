@@ -1,5 +1,8 @@
 """Shared helper that wires a core processing function to the GUI.
 
+Errors, cancellation and line progress are handled centrally by
+:meth:`~gui.main_window.MainWindow.attach_worker`.
+
 Usage in a dialog::
 
     from functools import partial
@@ -62,17 +65,12 @@ def run_tool(
     def _on_file_started(idx: int, total: int, name: str) -> None:
         main_window.set_busy(f"{label}: {name} ({idx}/{total})")
 
-    def _on_error(msg: str) -> None:
-        main_window.set_idle()
-        QMessageBox.warning(main_window, "Error", msg)
-
     def _on_done() -> None:
         main_window.increment_run_counter()
         main_window.replace_files(out_paths)
         main_window.set_idle(f"Done — {len(out_paths)} file(s) written")
 
     worker.file_started.connect(_on_file_started)
-    worker.error.connect(_on_error)
     worker.all_done.connect(_on_done)
 
     main_window.attach_worker(worker)
@@ -136,10 +134,6 @@ def run_concat(
         trash_inputs=trash_inputs,
     )
 
-    def _on_error(msg: str) -> None:
-        main_window.set_idle()
-        QMessageBox.warning(main_window, "Error", msg)
-
     def _on_done(path: Path) -> None:
         main_window.increment_run_counter()
         main_window.replace_files([path])
@@ -155,7 +149,6 @@ def run_concat(
             )
 
     main_window.set_busy(label)
-    worker.error.connect(_on_error)
     worker.done.connect(_on_done)
 
     main_window.attach_worker(worker)
@@ -191,17 +184,12 @@ def run_split(
     def _on_file_started(idx: int, total: int, name: str) -> None:
         main_window.set_busy(f"{label}: {name} ({idx}/{total})")
 
-    def _on_error(msg: str) -> None:
-        main_window.set_idle()
-        QMessageBox.warning(main_window, "Error", msg)
-
     def _on_done(created: list) -> None:
         main_window.increment_run_counter()
         main_window.replace_files(created)
         main_window.set_idle(f"Done — {len(created)} file(s) written")
 
     worker.file_started.connect(_on_file_started)
-    worker.error.connect(_on_error)
     worker.all_done.connect(_on_done)
 
     main_window.attach_worker(worker)
@@ -232,17 +220,12 @@ def run_compress(
     def _on_file_started(idx: int, total: int, name: str) -> None:
         main_window.set_busy(f"{label}: {name} ({idx}/{total})")
 
-    def _on_error(msg: str) -> None:
-        main_window.set_idle()
-        QMessageBox.warning(main_window, "Error", msg)
-
     def _on_done(produced: list) -> None:
         if replace_list:
             main_window.replace_files(produced)
         main_window.set_idle(f"Done — {len(produced)} file(s) produced")
 
     worker.file_started.connect(_on_file_started)
-    worker.error.connect(_on_error)
     worker.all_done.connect(_on_done)
 
     main_window.attach_worker(worker)
@@ -279,17 +262,12 @@ def run_rename(
     def _on_file_renamed(idx: int, total: int, old_name: str, new_path: Path) -> None:
         main_window.set_busy(f"Rename: {old_name} → {new_path.name} ({idx}/{total})")
 
-    def _on_error(msg: str) -> None:
-        main_window.set_idle()
-        QMessageBox.warning(main_window, "Rename error", msg)
-
     def _on_done(new_paths: list) -> None:
         main_window.replace_files(new_paths)
         main_window.set_idle(f"Done — {len(new_paths)} file(s) renamed")
 
     main_window.set_busy("Renaming files…")
     worker.file_renamed.connect(_on_file_renamed)
-    worker.error.connect(_on_error)
     worker.all_done.connect(_on_done)
 
     main_window.attach_worker(worker)
@@ -317,17 +295,12 @@ def run_filelist(main_window) -> None:
         out_encoding=settings["out_encoding"],
     )
 
-    def _on_error(msg: str) -> None:
-        main_window.set_idle()
-        QMessageBox.warning(main_window, "Error", msg)
-
     def _on_done(path: Path) -> None:
         main_window.increment_run_counter()
         main_window.replace_files([path])
         main_window.set_idle("Done — 1 file written")
 
     main_window.set_busy("Save file list")
-    worker.error.connect(_on_error)
     worker.done.connect(_on_done)
 
     main_window.attach_worker(worker)

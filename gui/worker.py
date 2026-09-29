@@ -4,7 +4,15 @@
 ``ConcatWorker``    — all input files merged into one output file.
 ``FilelistWorker``  — emit file metadata to one output file (no file reading).
 ``SplitWorker``     — one input file fanned out into numbered output chunks.
+``RenameWorker``    — rename files in place.
 ``CompressWorker``  — apply a file-level operation (compress/decompress) per path.
+``LineCountWorker`` — count lines of loaded files for the file list.
+
+The three streaming workers share :class:`_StreamWorker`: it meters the input
+stream, reports progress and honours cancellation (``requestInterruption``)
+every ``PROGRESS_INTERVAL`` input lines.  A cancelled or failed run removes
+the partial output it was writing and emits ``error(CANCELLED)`` or
+``error(message)``.
 """
 
 import contextlib
@@ -14,33 +22,74 @@ from typing import Any
 
 from PySide6.QtCore import QFile, QThread, Signal
 
+from core.filelist import count_newlines
+from core.naming import input_matcher, output_problem
 
-class ProcessWorker(QThread):
+CANCELLED = "Cancelled by user."
+
+
+class _Cancelled(Exception):
+    pass
+
+
+class _StreamWorker(QThread):
+    """Base for workers that stream text lines from input files.
+
+    Signals:
+        line_progress(int, int): (input lines read so far, percent 0-100).
+        error(str):              Error message or :data:`CANCELLED`.
+    """
+
+    line_progress = Signal(int, int)
+    error = Signal(str)
+
+    # Emit progress / check for cancel every this many input lines.
+    PROGRESS_INTERVAL = 5_000
+
+    def _reset_meter(self, total_bytes: int) -> None:
+        self._total_bytes = max(total_bytes, 1)
+        self._read_bytes = 0
+        self._read_lines = 0
+
+    def _metered(self, lines: Iterable[str]) -> Iterator[str]:
+        """Pass *lines* through while counting them for progress and cancel."""
+        for line in lines:
+            # Characters approximate bytes; exact enough for a progress bar.
+            self._read_bytes += len(line) + 1
+            self._read_lines += 1
+            if self._read_lines % self.PROGRESS_INTERVAL == 0:
+                if self.isInterruptionRequested():
+                    raise _Cancelled
+                self._emit_progress()
+            yield line
+
+    def _emit_progress(self) -> None:
+        percent = min(100, self._read_bytes * 100 // self._total_bytes)
+        self.line_progress.emit(self._read_lines, percent)
+
+    def _open_lines(self, path: Path, encoding: str) -> Iterator[str]:
+        """Open *path* on first read; yield metered lines without newline."""
+        with open(path, encoding=encoding, errors="replace") as fh:
+            yield from self._metered(_stripped_lines(fh))
+
+
+class ProcessWorker(_StreamWorker):
     """Run a streaming core function over one or more files in a background thread.
 
     Signals:
         file_started(int, int, str):
             Emitted when a new file begins processing.
             Args: (1-based file index, total files, file name)
-        line_progress(int):
-            Emitted every N lines with the current line count.
         file_done(int, Path):
             Emitted when a file finishes.
             Args: (1-based file index, output path)
         all_done():
             Emitted when all files have been processed.
-        error(str):
-            Emitted if an exception occurs; processing stops.
     """
 
     file_started = Signal(int, int, str)
-    line_progress = Signal(int)
     file_done = Signal(int, Path)
     all_done = Signal()
-    error = Signal(str)
-
-    # Emit a progress signal every this many lines to avoid flooding the GUI.
-    PROGRESS_INTERVAL = 5_000
 
     def __init__(
         self,
@@ -73,11 +122,18 @@ class ProcessWorker(QThread):
     # ── QThread entry point ───────────────────────────────────────────────────
 
     def run(self) -> None:
+        problem = output_problem([i for i, _ in self._jobs], [o for _, o in self._jobs])
+        if problem:
+            self.error.emit(problem)
+            return
         total = len(self._jobs)
         for idx, (in_path, out_path) in enumerate(self._jobs, start=1):
             self.file_started.emit(idx, total, in_path.name)
             try:
                 self._process_one(in_path, out_path)
+            except _Cancelled:
+                self.error.emit(CANCELLED)
+                return
             except Exception as exc:  # noqa: BLE001
                 self.error.emit(f"{in_path.name}: {exc}")
                 return
@@ -87,25 +143,20 @@ class ProcessWorker(QThread):
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _process_one(self, in_path: Path, out_path: Path) -> None:
-        line_count = 0
-        with (
-            open(in_path, encoding=self._in_encoding, errors="replace") as fh_in,
-            open(out_path, "w", encoding=self._out_encoding, newline="") as fh_out,
-        ):
+        self._reset_meter(in_path.stat().st_size)
+        lines = self._open_lines(in_path, self._in_encoding)
+        with _output(out_path, self._out_encoding) as fh_out:
             if self._pass_path:
-                out_lines = self._process_fn(_stripped_lines(fh_in), in_path)
+                out_lines = self._process_fn(lines, in_path)
             else:
-                out_lines = self._process_fn(_stripped_lines(fh_in))
+                out_lines = self._process_fn(lines)
             for out_line in out_lines:
                 fh_out.write(out_line + "\n")
-                line_count += 1
-                if line_count % self.PROGRESS_INTERVAL == 0:
-                    self.line_progress.emit(line_count)
         # Final progress tick so the GUI always reaches the real line count.
-        self.line_progress.emit(line_count)
+        self._emit_progress()
 
 
-class ConcatWorker(QThread):
+class ConcatWorker(_StreamWorker):
     """Merge N input files into one output file in a background thread.
 
     The *process_fn* receives an iterable of ``(filename, line_stream)`` pairs
@@ -117,19 +168,14 @@ class ConcatWorker(QThread):
     When *trash_inputs* is True, the input files are moved to the recycle bin
     after the output has been written completely.  Inputs that could not be
     trashed are listed in :attr:`trash_failures` when ``done`` is emitted.
-    On error, the partial output file is removed and no input is touched.
+    On error or cancel, the partial output file is removed and no input is
+    touched.
 
     Signals:
-        line_progress(int): Lines written so far (every PROGRESS_INTERVAL).
-        done(Path):         Output path when finished successfully.
-        error(str):         Error message; processing stopped.
+        done(Path): Output path when finished successfully.
     """
 
-    line_progress = Signal(int)
     done = Signal(Path)
-    error = Signal(str)
-
-    PROGRESS_INTERVAL = 5_000
 
     def __init__(
         self,
@@ -151,17 +197,16 @@ class ConcatWorker(QThread):
         self.trash_failures: list[str] = []
 
     def run(self) -> None:
-        if any(_same_file(p, self._out_path) for p in self._in_paths):
-            self.error.emit(
-                f"Output file {self._out_path.name} is one of the input files. "
-                "Change the output name pattern in File › Options."
-            )
+        problem = output_problem(self._in_paths, [self._out_path])
+        if problem:
+            self.error.emit(problem)
             return
         try:
             self._write()
+        except _Cancelled:
+            self.error.emit(CANCELLED)
+            return
         except Exception as exc:  # noqa: BLE001
-            with contextlib.suppress(OSError):
-                self._out_path.unlink()
             self.error.emit(str(exc))
             return
         if self._trash_inputs:
@@ -171,17 +216,14 @@ class ConcatWorker(QThread):
         self.done.emit(self._out_path)
 
     def _write(self) -> None:
+        self._reset_meter(sum(p.stat().st_size for p in self._in_paths))
         inputs = (
-            (p.name, _file_lines(p, self._in_encoding)) for p in self._in_paths
+            (p.name, self._open_lines(p, self._in_encoding)) for p in self._in_paths
         )
-        line_count = 0
-        with open(self._out_path, "w", encoding=self._out_encoding, newline="") as fh_out:
+        with _output(self._out_path, self._out_encoding) as fh_out:
             for out_line in self._process_fn(inputs):
                 fh_out.write(out_line + "\n")
-                line_count += 1
-                if line_count % self.PROGRESS_INTERVAL == 0:
-                    self.line_progress.emit(line_count)
-        self.line_progress.emit(line_count)
+        self._emit_progress()
 
 
 class FilelistWorker(QThread):
@@ -213,6 +255,10 @@ class FilelistWorker(QThread):
         self._out_encoding = out_encoding
 
     def run(self) -> None:
+        problem = output_problem(self._in_paths, [self._out_path])
+        if problem:
+            self.error.emit(problem)
+            return
         try:
             with open(
                 self._out_path, "w", encoding=self._out_encoding, newline=""
@@ -224,7 +270,7 @@ class FilelistWorker(QThread):
             self.error.emit(str(exc))
 
 
-class SplitWorker(QThread):
+class SplitWorker(_StreamWorker):
     """Fan each input file out into numbered chunk files.
 
     The *process_fn* has signature ``(Iterable[str]) -> Iterator[tuple[int, str]]``
@@ -236,19 +282,16 @@ class SplitWorker(QThread):
     only one output is open at a time.  When ``False`` (column splits), all
     chunk files stay open until the input is exhausted.
 
+    On error or cancel, the chunks of the file being split are removed;
+    chunks of earlier files are kept.
+
     Signals:
         file_started(int, int, str): (1-based input index, total inputs, name).
-        line_progress(int):          Lines written so far for the current input.
         all_done(list):              Every chunk Path created, in creation order.
-        error(str):                  Error message; processing stopped.
     """
 
     file_started = Signal(int, int, str)
-    line_progress = Signal(int)
     all_done = Signal(list)
-    error = Signal(str)
-
-    PROGRESS_INTERVAL = 5_000
 
     def __init__(
         self,
@@ -269,24 +312,33 @@ class SplitWorker(QThread):
     def run(self) -> None:
         total = len(self._in_paths)
         created: list[Path] = []
+        is_input = input_matcher(self._in_paths)
         for idx, in_path in enumerate(self._in_paths, start=1):
             self.file_started.emit(idx, total, in_path.name)
+            current: list[Path] = []
             try:
-                created.extend(self._split_one(in_path))
+                self._split_one(in_path, current, is_input)
+            except _Cancelled:
+                for p in current:
+                    _remove(p)
+                self.error.emit(CANCELLED)
+                return
             except Exception as exc:  # noqa: BLE001
+                for p in current:
+                    _remove(p)
                 self.error.emit(f"{in_path.name}: {exc}")
                 return
+            created.extend(current)
         self.all_done.emit(created)
 
-    def _split_one(self, in_path: Path) -> list[Path]:
-        created: list[Path] = []
-        line_count = 0
-        with (
-            open(in_path, encoding=self._in_encoding, errors="replace") as fh_in,
-            contextlib.ExitStack() as stack,
-        ):
+    def _split_one(
+        self, in_path: Path, created: list[Path], is_input: Callable[[Path], bool]
+    ) -> None:
+        self._reset_meter(in_path.stat().st_size)
+        lines = self._open_lines(in_path, self._in_encoding)
+        with contextlib.ExitStack() as stack:
             handles: dict[int, Any] = {}
-            for chunk_idx, line in self._process_fn(_stripped_lines(fh_in)):
+            for chunk_idx, line in self._process_fn(lines):
                 fh = handles.get(chunk_idx)
                 if fh is None:
                     if self._sequential:
@@ -296,27 +348,29 @@ class SplitWorker(QThread):
                     out_path = in_path.with_name(
                         f"{in_path.stem}_{chunk_idx:04d}{in_path.suffix}"
                     )
+                    if is_input(out_path):
+                        raise ValueError(f"Chunk {out_path.name} would overwrite a loaded file.")
                     fh = stack.enter_context(
                         open(out_path, "w", encoding=self._out_encoding, newline="")
                     )
                     handles[chunk_idx] = fh
                     created.append(out_path)
                 fh.write(line + "\n")
-                line_count += 1
-                if line_count % self.PROGRESS_INTERVAL == 0:
-                    self.line_progress.emit(line_count)
-        self.line_progress.emit(line_count)
-        return created
+        self._emit_progress()
 
 
 class RenameWorker(QThread):
     """Rename files in place on a background thread.
 
+    If a rename fails, ``all_done`` is still emitted with the paths as they
+    are on disk (renamed ones new, the rest old) so the file list stays
+    valid, followed by ``error``.
+
     Signals:
         file_renamed(int, int, str, Path):
             Emitted for each renamed file: (1-based index, total, old_name, new_path).
         all_done(list):
-            New Path list after all renames complete successfully.
+            Current Path list after the renames.
         error(str):
             Emitted on first failure; processing stops.
     """
@@ -339,6 +393,8 @@ class RenameWorker(QThread):
             try:
                 old_path.rename(new_path)
             except OSError as exc:
+                remaining = [old for old, _ in self._pairs[idx - 1:]]
+                self.all_done.emit(new_paths + remaining)
                 self.error.emit(f"{old_path.name}: {exc}")
                 return
             self.file_renamed.emit(idx, total, old_path.name, new_path)
@@ -351,12 +407,13 @@ class CompressWorker(QThread):
 
     The *file_fn* receives one :class:`~pathlib.Path` and returns the produced
     path or a list of produced paths (compression returns the archive,
-    decompression may return several extracted files).
+    decompression may return several extracted files).  Cancellation is
+    checked between files.
 
     Signals:
         file_started(int, int, str): (1-based index, total, file name).
         all_done(list):              Every produced Path, in order.
-        error(str):                  Error message; processing stopped.
+        error(str):                  Error message or :data:`CANCELLED`.
     """
 
     file_started = Signal(int, int, str)
@@ -377,6 +434,9 @@ class CompressWorker(QThread):
         total = len(self._paths)
         produced: list[Path] = []
         for idx, path in enumerate(self._paths, start=1):
+            if self.isInterruptionRequested():
+                self.error.emit(CANCELLED)
+                return
             self.file_started.emit(idx, total, path.name)
             try:
                 result = self._file_fn(path)
@@ -387,24 +447,65 @@ class CompressWorker(QThread):
         self.all_done.emit(produced)
 
 
+class LineCountWorker(QThread):
+    """Count the lines of each path in the background (for the file list).
+
+    Reads in 1 MiB binary chunks; stops quietly on ``requestInterruption``.
+    Unreadable files are skipped.
+
+    Signals:
+        counted(object, int): (Path, line count).
+    """
+
+    counted = Signal(object, int)
+
+    _CHUNK = 1024 * 1024
+
+    def __init__(self, paths: list[Path], parent: Any = None) -> None:
+        super().__init__(parent)
+        self._paths = paths
+
+    def run(self) -> None:
+        for path in self._paths:
+            if self.isInterruptionRequested():
+                return
+            try:
+                count = count_newlines(self._chunks(path))
+            except (OSError, _Cancelled):
+                continue
+            self.counted.emit(path, count)
+
+    def _chunks(self, path: Path) -> Iterator[bytes]:
+        with open(path, "rb") as fh:
+            while chunk := fh.read(self._CHUNK):
+                if self.isInterruptionRequested():
+                    raise _Cancelled
+                yield chunk
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _stripped_lines(fh: Iterable[str]) -> Iterator[str]:
     """Yield lines with the trailing newline removed."""
     for line in fh:
         yield line.rstrip("\n")
 
 
-def _file_lines(path: Path, encoding: str) -> Iterator[str]:
-    """Open *path* on first read and yield its lines without trailing newline."""
-    with open(path, encoding=encoding, errors="replace") as fh:
-        yield from _stripped_lines(fh)
+@contextlib.contextmanager
+def _output(path: Path, encoding: str) -> Iterator[Any]:
+    """Open *path* for writing; delete it again if the block fails."""
+    with open(path, "w", encoding=encoding, newline="") as fh:
+        try:
+            yield fh
+        except BaseException:
+            fh.close()
+            _remove(path)
+            raise
 
 
-def _same_file(a: Path, b: Path) -> bool:
-    """True if *a* and *b* point to the same file (case-insensitive on Windows)."""
-    try:
-        return a.resolve() == b.resolve() or (b.exists() and a.samefile(b))
-    except OSError:
-        return False
+def _remove(path: Path) -> None:
+    with contextlib.suppress(OSError):
+        path.unlink()
 
 
 def _move_to_trash(path: Path) -> bool:

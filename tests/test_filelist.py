@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.filelist import emit_filelist
+from core.filelist import count_newlines, emit_filelist
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FIXTURE_A = FIXTURE_DIR / "test_data.txt"
@@ -68,6 +68,26 @@ class TestEmitFilelist(unittest.TestCase):
         ghost = Path("/nonexistent/ghost_file.txt")
         result = list(emit_filelist([ghost]))
         self.assertIn("N/A", result[1])
+
+
+class TestCountNewlines(unittest.TestCase):
+
+    def _chunks(self, data: bytes, size: int):
+        return (data[i:i + size] for i in range(0, len(data), size))
+
+    def test_matches_text_line_count(self):
+        data = FIXTURE_A.read_bytes()
+        expected = len(FIXTURE_A.read_text(encoding="UTF-8").splitlines())
+        for size in (1, 7, 64, 1 << 20):
+            self.assertEqual(count_newlines(self._chunks(data, size)), expected)
+
+    def test_last_line_without_newline_counted(self):
+        data = FIXTURE_B.read_bytes().rstrip(b"\n")
+        expected = len(FIXTURE_B.read_text(encoding="UTF-8").splitlines())
+        self.assertEqual(count_newlines(self._chunks(data, 5)), expected)
+
+    def test_empty(self):
+        self.assertEqual(count_newlines([]), 0)
 
 
 if __name__ == "__main__":

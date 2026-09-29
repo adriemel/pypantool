@@ -169,7 +169,7 @@ Example: `%N_out%E` applied to `temperature_data.tab` → `temperature_data_out.
 
 ### `core/duplicates.py` — Duplicate Line Removal
 
-**What it does:** Removes duplicate lines, keeping only the first occurrence of each. The clever part: instead of storing every line in memory to compare against future lines (which would crash the program on a 700 MB file), it stores only a 32-byte fingerprint (SHA-256 hash) of each line. The fingerprints take up a tiny fraction of the memory.
+**What it does:** Removes duplicate lines, keeping only the first occurrence of each. The clever part: instead of storing every line in memory to compare against future lines (which would crash the program on a 700 MB file), it stores only an 8-byte fingerprint (BLAKE2b hash) of each line. With 2.5 million unique lines this needs about 160 MB, regardless of line length.
 **Why it exists:** Tabular data exports often contain accidental duplicates from data joins or repeated exports.
 **Things to know:** Comparison is case-sensitive and whitespace-significant — "Station A" and "station a" are treated as different lines.
 
@@ -246,7 +246,13 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** Three classes that run file processing in a background thread so the window never freezes. They communicate with the main window by emitting signals (like notifications) for events such as "started file 3 of 10", "processed 500,000 lines", and "all done".
 
 #### ProcessWorker
-**What it does:** Opens each file, feeds lines to a core processing function one at a time, and writes the output lines immediately to the output file. Reports progress every 5,000 lines. Used by all single-file tools (extract columns, delete duplicates, recalculate columns, etc.).
+**What it does:** Opens each file, feeds lines to a core processing function one at a time, and writes the output lines immediately to the output file. Reports progress every 5,000 input lines. Used by all single-file tools (extract columns, delete duplicates, recalculate columns, etc.). Before starting it refuses to run if an output name would overwrite an input or if two inputs would write the same output (e.g. a pattern without `%N`). On error or cancel, the half-written output file is deleted.
+
+#### Progress and cancel
+ProcessWorker, ConcatWorker and SplitWorker share a small base class. Every 5,000 input lines it reports lines read and a percentage (characters read vs. file size) to the status bar and progress bar, and checks whether you pressed **Cancel** in the status bar. Closing the window while a tool runs asks first, then cancels cleanly.
+
+#### LineCountWorker
+**What it does:** Fills the "Lines" column of the file list in the background, reading files in 1 MB binary blocks. It pauses while a tool runs, so no file is held open during a rename or move to the recycle bin.
 
 #### ConcatWorker
 **What it does:** Passes the input files' line streams to the concat function and writes the result. Each file is opened only when the function first reads from it, so concatenating by lines holds one file open at a time, while side-by-side merging still reads all files in parallel. Refuses to run if the output path is one of the inputs. On error, the partial output is deleted and no input is touched; on success it can move the inputs to the recycle bin (Qt `QFile.moveToTrash`).
@@ -274,7 +280,7 @@ Settings are saved automatically in the Windows registry and remembered across s
 1. Takes the core function pre-configured with your settings
 2. Figures out the output file path for each input file using the naming pattern
 3. Creates the appropriate worker
-4. Connects the worker's progress signals to the window's status bar and progress indicator
+4. Hands the worker to the main window, which connects progress, error and cancel handling centrally
 5. Starts the background thread
 6. When it's done, replaces the file list with the output files (enabling tool chaining)
 
@@ -289,7 +295,7 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** The central hub of the application. Manages the file list table, all menus and toolbar buttons, status bar, drag-and-drop, and coordinates all tool operations.
 
 #### File list table
-**What it does:** Shows each loaded file with its name, directory path, size, and line count. Line counts are filled in progressively as background workers report progress.
+**What it does:** Shows each loaded file with its name, directory path, size, and line count. Line counts are filled in by a background counter after files are loaded or produced by a tool.
 
 #### File loading
 **What it does:** Three ways to load files — file picker dialog (multi-select), folder picker (loads every text file in the folder), or drag-and-drop files/folders directly onto the window. Duplicate files are automatically skipped.
@@ -394,7 +400,7 @@ The compression tools have no dialogs: compress/decompress act directly on the l
 
 ### `tests/` — Automated Tests
 
-**What it does:** 243 tests that verify the core processing functions work correctly. They run automatically (e.g., with `pytest`) and take under a second. No GUI is involved.
+**What it does:** 258 tests that verify the core processing functions work correctly. They run automatically (e.g., with `pytest`) and take under a second. No GUI is involved.
 
 #### Test fixtures
 **What it does:** Three realistic data files that all tests use as input:
@@ -408,9 +414,9 @@ The compression tools have no dialogs: compress/decompress act directly on the l
 - `test_columns.py` (54 tests): Column specs parse correctly, matched columns work with and without regex, comment lines always pass through, extracting + deleting the same columns reconstructs the original file.
 - `test_comments.py` (8 tests): Default and custom prefixes, empty files, files with no comments.
 - `test_concat.py` (25 tests): Header skipping, filename column, row-count mismatch detection, custom delimiters.
-- `test_naming.py` (3 tests): Pattern tokens, collision-free output names.
+- `test_naming.py` (8 tests): Pattern tokens, collision-free output names, detection of outputs that would overwrite inputs or each other.
 - `test_duplicates.py` (8 tests): Adjacent and non-adjacent duplicates, order preserved, case sensitivity.
-- `test_filelist.py` (8 tests): Header format, all metadata fields present, graceful handling of missing files.
+- `test_filelist.py` (13 tests): Header format, all metadata fields present, graceful handling of missing files, line counting across chunk boundaries.
 - `test_lines.py` (23 tests): All spec formats, matched line extraction, regex patterns, complement property.
 - `test_recalc.py` (12 tests): Factor, offset, combined formula, multi-column ranges, non-numeric passthrough, header skipping, custom delimiter, integer vs. float formatting.
 - `test_rename.py` (14 tests): Search/replace, prefix, suffix, combined operations, filesystem not modified by preview, empty file list.
@@ -433,8 +439,9 @@ The compression tools have no dialogs: compress/decompress act directly on the l
 - **The GUI never freezes** because all file processing runs in a background thread. If a tool is running, the status bar shows progress and menus are disabled until it finishes.
 - **Regex mode is available** in matched-columns and matched-lines dialogs. Leave the checkbox unchecked for plain text matching.
 - **Concatenate by columns requires equal row counts.** If your files have different numbers of rows, the operation will stop with an error rather than silently producing misaligned output.
-- **SHA-256 for deduplication** means duplicate detection uses 32 bytes of memory per unique line regardless of how long the line is. A file with 2.5 million unique lines needs about 80 MB of memory for the hash set — manageable.
-- **Progress is reported every 5,000 lines.** For very large files you won't see every line tick by, but you'll see regular updates.
+- **64-bit hashes for deduplication** mean duplicate detection uses about 63 bytes of memory per unique line (hash plus set overhead), regardless of how long the line is: about 160 MB for 2.5 million unique lines. The chance that two different lines share a hash (and one is wrongly dropped) is about 2 in 10 million for such a file.
+- **Progress is reported every 5,000 lines,** as line count and percentage. The Cancel button in the status bar stops a tool within the next 5,000 lines and deletes the unfinished output file; outputs of files already finished are kept.
+- **Setup:** `pip install -r requirements.txt` (runtime) or `requirements-dev.txt` (adds pytest for the tests).
 - **Tests only cover `core/`**, not the GUI. GUI behavior is tested manually. This is intentional: GUI testing is fragile and slow; core logic tests are fast and reliable.
 
 ---
@@ -446,7 +453,7 @@ The compression tools have no dialogs: compress/decompress act directly on the l
 - **Generator / Iterator:** A Python pattern that produces one item at a time on demand, rather than computing all items upfront. Every core function uses this pattern.
 - **QThread:** A class in the PySide6 GUI library for running code in a background thread so the window stays responsive.
 - **Signal:** In PySide6, a way for a background thread to send a notification to the main window (e.g., "I finished processing line 500,000"). The window then updates the progress bar.
-- **SHA-256:** A hashing algorithm that converts any text into a unique 32-byte fingerprint. Used here to track which lines have been seen without storing the lines themselves.
+- **Hash (BLAKE2b):** An algorithm that converts any text into a short fingerprint (here 8 bytes). Used to track which lines have been seen without storing the lines themselves.
 - **Regex (regular expression):** A mini-language for describing text patterns. For example, `^//` means "starts with //". Available as an option in search tools — leave unchecked for plain text matching.
 - **ExitStack:** A Python tool for safely managing multiple open files at once. Used in the split worker to ensure all chunk files are properly closed even if an error occurs.
 - **QSettings:** A PySide6 class that saves and reads application settings from the Windows registry, so preferences persist between sessions.

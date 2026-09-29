@@ -6,6 +6,8 @@ Supported tokens:
   %a  — auto-incrementing run counter (1, 2, 3 …)
 """
 
+import os
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -50,3 +52,58 @@ def unique_path(directory: Path, stem: str, ext: str) -> Path:
         candidate = directory / f"{stem}_{counter}{ext}"
         counter += 1
     return candidate
+
+
+def same_file(a: Path, b: Path) -> bool:
+    """True if *a* and *b* are the same file (case-insensitive on Windows,
+    hard links included)."""
+    if _key(a) == _key(b):
+        return True
+    id_a = _file_id(a)
+    return id_a is not None and id_a == _file_id(b)
+
+
+def input_matcher(in_paths: list[Path]) -> Callable[[Path], bool]:
+    """Return a fast predicate: is a path one of *in_paths* (see :func:`same_file`)?"""
+    in_keys = {_key(p) for p in in_paths}
+    in_ids = {_file_id(p) for p in in_paths} - {None}
+
+    def is_input(path: Path) -> bool:
+        return _key(path) in in_keys or _file_id(path) in in_ids
+
+    return is_input
+
+
+def output_problem(in_paths: list[Path], out_paths: list[Path]) -> str | None:
+    """Return an error message if an output would overwrite an input or two
+    outputs share a name; ``None`` if it is safe to run.
+
+    Args:
+        in_paths:  Files that will be read.
+        out_paths: Files that will be written.
+    """
+    is_input = input_matcher(in_paths)
+    for out in out_paths:
+        if is_input(out):
+            return (
+                f"Output file {out.name} would overwrite an input file. "
+                "Change the output name pattern in File › Options."
+            )
+    if len({_key(o) for o in out_paths}) < len(out_paths):
+        return (
+            "Several input files map to the same output file name. "
+            "Include %N in the output name pattern in File › Options."
+        )
+    return None
+
+
+def _key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _file_id(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)

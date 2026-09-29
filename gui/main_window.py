@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QHeaderView,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPushButton,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.options_dialog import OptionsDialog, load_settings
+from gui.worker import CANCELLED, LineCountWorker
 
 
 class MainWindow(QMainWindow):
@@ -43,6 +45,15 @@ class MainWindow(QMainWindow):
         self._run_counter: int = 1
         # Active worker thread (kept alive until done).
         self._worker: QThread | None = None
+        # Background line counter for the file list; paused while a tool runs.
+        self._count_worker: LineCountWorker | None = None
+        self._line_counts: dict[Path, int] = {}
+        # Table row of each loaded path.
+        self._rows: dict[Path, int] = {}
+        # Status text of the running operation (progress is appended to it).
+        self._busy_message = ""
+        # Set on close so late worker signals do not start new threads.
+        self._closing = False
 
         self._build_ui()
         self._build_menu()
@@ -98,8 +109,12 @@ class MainWindow(QMainWindow):
         self._progress.setMaximumWidth(180)
         self._progress.setTextVisible(False)
         self._progress.setVisible(False)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._cancel_worker)
         self.statusBar().addWidget(self._status_label, 1)
         self.statusBar().addPermanentWidget(self._progress)
+        self.statusBar().addPermanentWidget(self._cancel_btn)
 
     def _build_menu(self) -> None:
         menubar = self.menuBar()
@@ -225,7 +240,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No files", "No files found in that folder.")
 
     def _clear_files(self) -> None:
+        self._stop_line_count()
         self._files.clear()
+        self._line_counts.clear()
+        self._rows.clear()
         self._table.setRowCount(0)
         self._tools_menu.setEnabled(False)
         self._stack.setCurrentIndex(0)
@@ -263,10 +281,14 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(1)
             self._tools_menu.setEnabled(True)
             self._set_status(f"{len(self._files)} file(s) loaded")
+            self._start_line_count()
 
     def replace_files(self, paths: list[Path]) -> None:
         """Replace the entire file list (used after a tool run for chaining)."""
+        self._stop_line_count()
         self._files = list(paths)
+        self._line_counts.clear()
+        self._rows.clear()
         self._table.setRowCount(0)
         for path in self._files:
             self._add_table_row(path)
@@ -276,18 +298,48 @@ class MainWindow(QMainWindow):
             self._stack.setCurrentIndex(0)
         self._tools_menu.setEnabled(bool(self._files))
         self._set_status(f"{len(self._files)} file(s) loaded")
+        self._start_line_count()
 
     def _add_table_row(self, path: Path) -> None:
         row = self._table.rowCount()
         self._table.insertRow(row)
+        self._rows[path] = row
         self._table.setItem(row, self.COL_NAME, QTableWidgetItem(path.name))
         self._table.setItem(row, self.COL_PATH, QTableWidgetItem(str(path.parent)))
         size_kb = path.stat().st_size / 1024 if path.exists() else 0
         self._table.setItem(row, self.COL_SIZE, QTableWidgetItem(f"{size_kb:,.1f} KB"))
         self._table.setItem(row, self.COL_LINES, QTableWidgetItem("—"))
 
-    def update_line_count(self, row: int, count: int) -> None:
-        """Update the line count cell for a given table row (0-based)."""
+    # ── Line counts (background) ───────────────────────────────────────────────
+
+    def _start_line_count(self) -> None:
+        """Count lines of all loaded files not counted yet, in the background."""
+        if self._closing or self._worker is not None:
+            return  # resumed in _on_worker_finished
+        self._stop_line_count()
+        todo = [p for p in self._files if p not in self._line_counts]
+        if not todo:
+            return
+        worker = LineCountWorker(todo)
+        worker.counted.connect(self._on_line_counted)
+        self._count_worker = worker
+        worker.start()
+
+    def _stop_line_count(self) -> None:
+        """Stop the line counter so no file is held open (e.g. before a rename)."""
+        worker = self._count_worker
+        if worker is None:
+            return
+        worker.counted.disconnect(self._on_line_counted)
+        worker.requestInterruption()
+        worker.wait()
+        self._count_worker = None
+
+    def _on_line_counted(self, path: Path, count: int) -> None:
+        self._line_counts[path] = count
+        row = self._rows.get(path)
+        if row is None:
+            return
         item = self._table.item(row, self.COL_LINES)
         if item:
             item.setText(f"{count:,}")
@@ -299,16 +351,28 @@ class MainWindow(QMainWindow):
 
     def set_busy(self, message: str) -> None:
         """Switch the UI into busy mode (disables menus, shows progress bar)."""
+        self._busy_message = message
         self._set_status(message)
-        self._progress.setRange(0, 0)  # indeterminate
+        self._progress.setRange(0, 0)  # indeterminate until progress arrives
         self._progress.setVisible(True)
+        self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setVisible(True)
         self.menuBar().setEnabled(False)
 
     def set_idle(self, message: str = "Ready") -> None:
         """Return the UI to idle state."""
+        self._busy_message = ""
         self._set_status(message)
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self.menuBar().setEnabled(True)
+
+    def _on_line_progress(self, lines: int, percent: int) -> None:
+        if not self._busy_message:
+            return
+        self._progress.setRange(0, 100)
+        self._progress.setValue(percent)
+        self._set_status(f"{self._busy_message} — {lines:,} lines ({percent} %)")
 
     # ── Worker wiring helpers (used by tool dialogs) ───────────────────────────
 
@@ -328,13 +392,52 @@ class MainWindow(QMainWindow):
         return load_settings()
 
     def attach_worker(self, worker: "QThread") -> None:
-        """Register and start a worker; connect generic error/done handling."""
+        """Register and start a worker; connect generic error, progress and
+        cancel handling.  Shows the Cancel button even when the caller did not
+        call :meth:`set_busy` before."""
+        self._stop_line_count()
         self._worker = worker
         worker.finished.connect(self._on_worker_finished)
+        worker.error.connect(self._on_worker_error)
+        if hasattr(worker, "line_progress"):
+            worker.line_progress.connect(self._on_line_progress)
+        if not self._busy_message:
+            self.set_busy("Working…")
         worker.start()
 
     def _on_worker_finished(self) -> None:
         self._worker = None
+        self._start_line_count()
+
+    def _on_worker_error(self, msg: str) -> None:
+        if msg == CANCELLED:
+            self.set_idle("Cancelled — partial output removed")
+            return
+        self.set_idle("Error")
+        QMessageBox.warning(self, "Error", msg)
+
+    def _cancel_worker(self) -> None:
+        if self._worker is None:
+            return
+        self._cancel_btn.setEnabled(False)
+        self._set_status("Cancelling…")
+        self._worker.requestInterruption()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            answer = QMessageBox.question(
+                self, "Tool still running",
+                "A tool is still running. Cancel it and quit?\n"
+                "The output file being written will be removed.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._worker.requestInterruption()
+            self._worker.wait()
+        self._closing = True
+        self._stop_line_count()
+        event.accept()
 
     # ── Menu helpers ───────────────────────────────────────────────────────────
 
