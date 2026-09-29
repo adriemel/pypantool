@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QFile, QThread, Signal
 
 
 class ProcessWorker(QThread):
@@ -109,9 +109,15 @@ class ConcatWorker(QThread):
     """Merge N input files into one output file in a background thread.
 
     The *process_fn* receives an iterable of ``(filename, line_stream)`` pairs
-    and returns an ``Iterator[str]``.  All input files are held open
-    simultaneously so the function can interleave reads (needed for
-    concat-by-columns).
+    and returns an ``Iterator[str]``.  Each input file is opened only when the
+    function first reads from it and closed when its stream is exhausted, so
+    sequential concatenation holds one file open at a time; concat-by-columns
+    still reads all of them in parallel.
+
+    When *trash_inputs* is True, the input files are moved to the recycle bin
+    after the output has been written completely.  Inputs that could not be
+    trashed are listed in :attr:`trash_failures` when ``done`` is emitted.
+    On error, the partial output file is removed and no input is touched.
 
     Signals:
         line_progress(int): Lines written so far (every PROGRESS_INTERVAL).
@@ -132,6 +138,7 @@ class ConcatWorker(QThread):
         process_fn: Callable[[Iterable[tuple[str, Iterable[str]]]], Iterator[str]],
         in_encoding: str = "UTF-8",
         out_encoding: str = "UTF-8",
+        trash_inputs: bool = False,
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
@@ -140,33 +147,41 @@ class ConcatWorker(QThread):
         self._process_fn = process_fn
         self._in_encoding = in_encoding
         self._out_encoding = out_encoding
+        self._trash_inputs = trash_inputs
+        self.trash_failures: list[str] = []
 
     def run(self) -> None:
+        if any(_same_file(p, self._out_path) for p in self._in_paths):
+            self.error.emit(
+                f"Output file {self._out_path.name} is one of the input files. "
+                "Change the output name pattern in File › Options."
+            )
+            return
         try:
-            with contextlib.ExitStack() as stack:
-                handles = [
-                    stack.enter_context(
-                        open(p, encoding=self._in_encoding, errors="replace")
-                    )
-                    for p in self._in_paths
-                ]
-                inputs = [
-                    (p.name, _stripped_lines(fh))
-                    for p, fh in zip(self._in_paths, handles)
-                ]
-                line_count = 0
-                with open(
-                    self._out_path, "w", encoding=self._out_encoding, newline=""
-                ) as fh_out:
-                    for out_line in self._process_fn(inputs):
-                        fh_out.write(out_line + "\n")
-                        line_count += 1
-                        if line_count % self.PROGRESS_INTERVAL == 0:
-                            self.line_progress.emit(line_count)
-            self.line_progress.emit(line_count)
-            self.done.emit(self._out_path)
+            self._write()
         except Exception as exc:  # noqa: BLE001
+            with contextlib.suppress(OSError):
+                self._out_path.unlink()
             self.error.emit(str(exc))
+            return
+        if self._trash_inputs:
+            self.trash_failures = [
+                p.name for p in self._in_paths if not _move_to_trash(p)
+            ]
+        self.done.emit(self._out_path)
+
+    def _write(self) -> None:
+        inputs = (
+            (p.name, _file_lines(p, self._in_encoding)) for p in self._in_paths
+        )
+        line_count = 0
+        with open(self._out_path, "w", encoding=self._out_encoding, newline="") as fh_out:
+            for out_line in self._process_fn(inputs):
+                fh_out.write(out_line + "\n")
+                line_count += 1
+                if line_count % self.PROGRESS_INTERVAL == 0:
+                    self.line_progress.emit(line_count)
+        self.line_progress.emit(line_count)
 
 
 class FilelistWorker(QThread):
@@ -376,3 +391,24 @@ def _stripped_lines(fh: Iterable[str]) -> Iterator[str]:
     """Yield lines with the trailing newline removed."""
     for line in fh:
         yield line.rstrip("\n")
+
+
+def _file_lines(path: Path, encoding: str) -> Iterator[str]:
+    """Open *path* on first read and yield its lines without trailing newline."""
+    with open(path, encoding=encoding, errors="replace") as fh:
+        yield from _stripped_lines(fh)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """True if *a* and *b* point to the same file (case-insensitive on Windows)."""
+    try:
+        return a.resolve() == b.resolve() or (b.exists() and a.samefile(b))
+    except OSError:
+        return False
+
+
+def _move_to_trash(path: Path) -> bool:
+    """Move *path* to the system recycle bin; True on success."""
+    result = QFile.moveToTrash(str(path))
+    ok = result[0] if isinstance(result, tuple) else bool(result)
+    return ok and not path.exists()

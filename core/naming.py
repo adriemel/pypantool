@@ -37,3 +37,16 @@ def resolve_output_path(pattern: str, input_path: Path, counter: int) -> Path:
     """
     name = resolve_output_name(pattern, input_path, counter)
     return input_path.parent / name
+
+
+def unique_path(directory: Path, stem: str, ext: str) -> Path:
+    """Return ``directory/stem+ext``, or the first free ``stem_2+ext``, ``stem_3+ext`` …
+
+    Never returns the path of an existing file.
+    """
+    candidate = directory / f"{stem}{ext}"
+    counter = 2
+    while candidate.exists():
+        candidate = directory / f"{stem}_{counter}{ext}"
+        counter += 1
+    return candidate

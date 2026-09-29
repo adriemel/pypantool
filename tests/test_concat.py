@@ -54,13 +54,40 @@ class TestConcatByLines(unittest.TestCase):
         # First line of file A is the first line of output.
         self.assertEqual(result[0], ALL_A[0])
 
-    def test_include_filename_inserts_markers(self):
-        result = self._run(include_filename=True)
-        # Both filenames appear as "# ..." markers.
-        self.assertIn("# test_data.txt", result)
-        self.assertIn("# test_data_supplement.txt", result)
-        # Total lines = A + B + 2 filename markers.
-        self.assertEqual(len(result), LINES_A + LINES_B + 2)
+    def test_filename_column_prefixes_data_lines(self):
+        # Header = 4 lines of A (3 comments + column header).
+        result = self._run(skip_header_lines=4, filename_column=True)
+        self.assertEqual(len(result), LINES_A + LINES_B - 4)
+        # Comments in the header pass through unchanged.
+        self.assertEqual(result[:3], ALL_A[:3])
+        self.assertEqual(result[3], "Filename\t" + ALL_A[3])
+        self.assertEqual(result[4], "test_data\t" + ALL_A[4])
+        self.assertEqual(result[LINES_A], "test_data_supplement\t" + ALL_B[4])
+
+    def test_filename_column_leaves_comments_and_empty_lines(self):
+        result = self._run(skip_header_lines=4, filename_column=True)
+        for line in result:
+            if line == "" or line.startswith("//"):
+                continue
+            first = line.split("\t", 1)[0]
+            self.assertIn(first, ("Filename", "test_data", "test_data_supplement"))
+        self.assertIn("", result)
+        self.assertIn(ALL_A[24], result)  # mid-file comment, unprefixed
+
+    def test_filename_column_without_header(self):
+        # No header lines: the column header row is prefixed like data.
+        result = self._run(filename_column=True)
+        self.assertEqual(result[3], "test_data\t" + ALL_A[3])
+        self.assertNotIn("Filename", [line.split("\t", 1)[0] for line in result])
+
+    def test_filename_column_custom_delimiter(self):
+        result = self._run(skip_header_lines=4, filename_column=True, delimiter=";")
+        self.assertEqual(result[4], "test_data;" + ALL_A[4])
+
+    def test_filename_column_with_skip_comments(self):
+        result = self._run(skip_header_lines=4, filename_column=True, skip_comments=True)
+        self.assertEqual(result[0], "Filename\t" + ALL_A[3])
+        self.assertFalse(any(line.startswith("//") for line in result))
 
     def test_skip_empty_lines(self):
         base = self._run()

@@ -180,7 +180,7 @@ Example: `%N_out%E` applied to `temperature_data.tab` → `temperature_data_out.
 **What it does:** Merges multiple files into one. Two completely different strategies:
 
 #### Concatenate by lines (vertical stacking)
-**What it does:** Appends files one after another, like stacking sheets of paper. Files 2, 3, etc. can optionally have their header lines skipped so the output doesn't repeat the header. You can optionally insert a `# filename` marker before each file's section, skip blank lines, or skip comment lines.
+**What it does:** Appends files one after another, like stacking sheets of paper. The first N lines count as header: kept from the first file, skipped from files 2, 3, etc. so the output doesn't repeat the header. Optionally the file name (without extension) is added as column 1 of every data line; the last header line then gets `Filename` as its first column, while comment and empty lines stay untouched. You can also skip blank lines or comment lines. The output is always named `Concatenate_out.<ext>` (extension of the first file) in the first file's folder; if that name is taken, `_2`, `_3`, … is appended, so nothing is overwritten. Optionally the input files are moved to the recycle bin, but only after the output was written completely.
 **Use case:** You have one data file per month. This merges them into a single year-long file without duplicating the header row.
 
 #### Concatenate by columns (horizontal merging)
@@ -249,7 +249,7 @@ Settings are saved automatically in the Windows registry and remembered across s
 **What it does:** Opens each file, feeds lines to a core processing function one at a time, and writes the output lines immediately to the output file. Reports progress every 5,000 lines. Used by all single-file tools (extract columns, delete duplicates, recalculate columns, etc.).
 
 #### ConcatWorker
-**What it does:** Opens all input files at the same time, passes their line streams to the concat function, and writes the result. Keeps all files open simultaneously so rows can be interleaved (needed for side-by-side merging).
+**What it does:** Passes the input files' line streams to the concat function and writes the result. Each file is opened only when the function first reads from it, so concatenating by lines holds one file open at a time, while side-by-side merging still reads all files in parallel. Refuses to run if the output path is one of the inputs. On error, the partial output is deleted and no input is touched; on success it can move the inputs to the recycle bin (Qt `QFile.moveToTrash`).
 
 #### FilelistWorker
 **What it does:** The simplest worker — it doesn't read any file contents, just collects file metadata and writes the summary file.
@@ -374,7 +374,7 @@ Here's a quick reference:
 | `MatchedLinesDialog` | Pattern text to match within line content; regex option |
 | `CommentsDialog` | The prefix that marks comment lines (default: `//`) |
 | `DoublesDialog` | No settings — just confirm |
-| `ConcatLinesDialog` | Lines to skip from subsequent files; optional filename markers; skip blanks/comments |
+| `ConcatLinesDialog` | Header lines; optional filename column; skip blanks/comments; move inputs to recycle bin |
 | `ConcatColumnsDialog` | Lines to skip; optional filename row at top |
 | `SearchReplaceDialog` | Search text and replacement text |
 | `SearchReplaceManyDialog` | Path to a tab-delimited database file of search/replace pairs |
@@ -407,7 +407,8 @@ The compression tools have no dialogs: compress/decompress act directly on the l
 **What the tests verify:**
 - `test_columns.py` (54 tests): Column specs parse correctly, matched columns work with and without regex, comment lines always pass through, extracting + deleting the same columns reconstructs the original file.
 - `test_comments.py` (8 tests): Default and custom prefixes, empty files, files with no comments.
-- `test_concat.py` (19 tests): Header skipping, filename markers, row-count mismatch detection, custom delimiters.
+- `test_concat.py` (25 tests): Header skipping, filename column, row-count mismatch detection, custom delimiters.
+- `test_naming.py` (3 tests): Pattern tokens, collision-free output names.
 - `test_duplicates.py` (8 tests): Adjacent and non-adjacent duplicates, order preserved, case sensitivity.
 - `test_filelist.py` (8 tests): Header format, all metadata fields present, graceful handling of missing files.
 - `test_lines.py` (23 tests): All spec formats, matched line extraction, regex patterns, complement property.
@@ -447,7 +448,7 @@ The compression tools have no dialogs: compress/decompress act directly on the l
 - **Signal:** In PySide6, a way for a background thread to send a notification to the main window (e.g., "I finished processing line 500,000"). The window then updates the progress bar.
 - **SHA-256:** A hashing algorithm that converts any text into a unique 32-byte fingerprint. Used here to track which lines have been seen without storing the lines themselves.
 - **Regex (regular expression):** A mini-language for describing text patterns. For example, `^//` means "starts with //". Available as an option in search tools — leave unchecked for plain text matching.
-- **ExitStack:** A Python tool for safely managing multiple open files at once. Used in the concat worker to ensure all files are properly closed even if an error occurs.
+- **ExitStack:** A Python tool for safely managing multiple open files at once. Used in the split worker to ensure all chunk files are properly closed even if an error occurs.
 - **QSettings:** A PySide6 class that saves and reads application settings from the Windows registry, so preferences persist between sessions.
 - **Encoding:** A rule for converting characters to bytes. UTF-8 handles virtually all modern text; Latin-1 and CP1252 are older formats common in European scientific data.
 - **Tool chaining:** Running one tool, then immediately running another on the output. PyPanTool supports this natively — after each run, the file list updates to the outputs automatically.

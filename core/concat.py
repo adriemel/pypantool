@@ -10,29 +10,37 @@ touching the filesystem.
 """
 
 from collections.abc import Iterable, Iterator
+from pathlib import PurePath
+
+FILENAME_HEADER = "Filename"
 
 
 def concat_by_lines(
     inputs: Iterable[tuple[str, Iterable[str]]],
     skip_header_lines: int = 0,
-    include_filename: bool = False,
+    filename_column: bool = False,
     skip_empty: bool = False,
     skip_comments: bool = False,
     comment_prefix: str = "//",
+    delimiter: str = "\t",
 ) -> Iterator[str]:
     """Append files top-to-bottom.
 
     Args:
         inputs:            Iterable of ``(filename, line_stream)`` pairs.
-        skip_header_lines: Number of lines to skip from files 2..N (avoids
+        skip_header_lines: Number of header lines. They are kept from the
+                           first file and skipped from files 2..N (avoids
                            duplicate column headers).
-        include_filename:  If True, emit ``# {filename}`` before each file's
-                           block.
+        filename_column:   If True, prepend the file stem as column 1 of
+                           every data line.  The last header line of the
+                           first file gets ``Filename`` instead.  Comment
+                           lines (*comment_prefix*) and empty lines are
+                           never prefixed.
         skip_empty:        If True, suppress blank lines in the output.
         skip_comments:     If True, suppress lines starting with
                            *comment_prefix*.
-        comment_prefix:    Prefix that identifies a comment line. Only used
-                           when *skip_comments* is True.
+        comment_prefix:    Prefix that identifies a comment line.
+        delimiter:         Column separator used for the filename column.
 
     Raises:
         ValueError: If *skip_comments* is True and *comment_prefix* is empty.
@@ -40,26 +48,27 @@ def concat_by_lines(
     if skip_comments and not comment_prefix:
         raise ValueError("comment_prefix must not be empty when skip_comments is True.")
 
+    def is_comment(line: str) -> bool:
+        return bool(comment_prefix) and line.startswith(comment_prefix)
+
     for file_idx, (name, lines) in enumerate(inputs):
-        if include_filename:
-            yield f"# {name}"
-
-        it = iter(lines)
-
-        # Skip header lines from files 2..N.
-        if file_idx > 0:
-            for _ in range(skip_header_lines):
-                try:
-                    next(it)
-                except StopIteration:
-                    break
-
-        for line in it:
+        stem = PurePath(name).stem
+        for lineno, line in enumerate(lines, start=1):
+            is_header = lineno <= skip_header_lines
+            if is_header and file_idx > 0:
+                continue
             if skip_empty and line == "":
                 continue
-            if skip_comments and line.startswith(comment_prefix):
+            if skip_comments and is_comment(line):
                 continue
-            yield line
+            if not filename_column or line == "" or is_comment(line):
+                yield line
+            elif not is_header:
+                yield f"{stem}{delimiter}{line}"
+            elif lineno == skip_header_lines:
+                yield f"{FILENAME_HEADER}{delimiter}{line}"
+            else:
+                yield line
 
 
 def concat_by_columns(

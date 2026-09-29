@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QMessageBox
 
-from core.naming import resolve_output_path
+from core.naming import resolve_output_path, unique_path
 from gui.worker import (
     CompressWorker,
     ConcatWorker,
@@ -83,6 +83,8 @@ def run_concat(
     process_fn: Callable[[Iterable[tuple[str, Iterable[str]]]], Iterator[str]],
     label: str,
     min_files: int = 2,
+    out_stem: str | None = None,
+    trash_inputs: bool = False,
 ) -> None:
     """Merge all loaded files into one output using a concat core function.
 
@@ -94,6 +96,12 @@ def run_concat(
         label:       Short operation name shown in the status bar.
         min_files:   Minimum number of loaded files required (2 for true
                      concatenation, 1 for report tools like Search One String).
+        out_stem:    Fixed output name stem (e.g. ``"Concatenate_out"``) used
+                     instead of the Options pattern.  The first file's
+                     extension is appended and ``_2``, ``_3`` … are added
+                     when the name is taken, so nothing is overwritten.
+        trash_inputs: Move the input files to the recycle bin after the
+                     output was written successfully.
     """
     in_paths = main_window.files
     if len(in_paths) < min_files:
@@ -103,8 +111,21 @@ def run_concat(
         )
         return
 
+    missing = [p for p in in_paths if not p.is_file()]
+    if missing:
+        listing = "\n".join(str(p) for p in missing)
+        QMessageBox.warning(
+            main_window, label,
+            f"The following loaded file(s) no longer exist on disk:\n\n{listing}",
+        )
+        return
+
     settings = main_window.current_settings()
-    out_path = resolve_output_path(settings["pattern"], in_paths[0], main_window.run_counter)
+    first = in_paths[0]
+    if out_stem:
+        out_path = unique_path(first.parent, out_stem, first.suffix)
+    else:
+        out_path = resolve_output_path(settings["pattern"], first, main_window.run_counter)
 
     worker = ConcatWorker(
         in_paths=in_paths,
@@ -112,6 +133,7 @@ def run_concat(
         process_fn=process_fn,
         in_encoding=settings["in_encoding"],
         out_encoding=settings["out_encoding"],
+        trash_inputs=trash_inputs,
     )
 
     def _on_error(msg: str) -> None:
@@ -121,7 +143,16 @@ def run_concat(
     def _on_done(path: Path) -> None:
         main_window.increment_run_counter()
         main_window.replace_files([path])
-        main_window.set_idle("Done — 1 file written")
+        status = f"Done — {path.name} written"
+        if trash_inputs:
+            status += f", {len(in_paths) - len(worker.trash_failures)} input file(s) moved to recycle bin"
+        main_window.set_idle(status)
+        if worker.trash_failures:
+            QMessageBox.warning(
+                main_window, label,
+                "Output was written, but these input files could not be moved "
+                "to the recycle bin:\n\n" + "\n".join(worker.trash_failures),
+            )
 
     main_window.set_busy(label)
     worker.error.connect(_on_error)
