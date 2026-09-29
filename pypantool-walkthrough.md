@@ -184,7 +184,7 @@ Example: `%N_out%E` applied to `temperature_data.tab` → `temperature_data_out.
 **Use case:** You have one data file per month. This merges them into a single year-long file without duplicating the header row.
 
 #### Concatenate by columns (horizontal merging)
-**What it does:** Zips files side-by-side, row by row. Row 1 of file A and row 1 of file B become a single wider row. All files must have the same number of rows. Optionally, a row of filenames is prepended at the top. The output is `Concatenate_columns_out.<ext>` in the first file's folder (auto-numbered, never overwrites); Search One String likewise writes `Search_out.<ext>`.
+**What it does:** Zips files side-by-side, row by row. Row 1 of file A and row 1 of file B become a single wider row. All files must have the same number of rows. Optionally, a row of filenames is prepended at the top. The output is `Concatenate_columns_out.<ext>` in the first file's folder (auto-numbered, never overwrites); Search One String likewise writes `Search_out.<ext>`, and Save File List writes `Filelist_out.txt`.
 **Use case:** You measured temperature in one file and salinity in another, same stations in the same order. This creates one combined file with all measurements.
 **Things to know:** If the files have different numbers of rows, the operation stops with an error — misaligned data would silently produce wrong results.
 

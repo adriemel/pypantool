@@ -61,7 +61,7 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 10. **Delete double lines** — remove duplicate lines (keep first occurrence)
 11. **Concatenate files by columns** — merge files side-by-side into `Concatenate_columns_out.<ext>` (auto-numbered; same row count required). Options: skip N header lines, include filename in first row.
 12. **Concatenate files by lines** — append files top-to-bottom into `Concatenate_out.<ext>` (auto-numbered, never overwrites). Options: N header lines (kept once), filename stem as column 1 (`Filename` on the header line; comment/empty lines untouched), skip empty lines, skip comment lines, move inputs to recycle bin after success.
-13. **Save file list** — export loaded file metadata (path, name, size, date) to a text file.
+13. **Save file list** — export loaded file metadata (path, name, size, date) to `Filelist_out.txt` in the first file's folder (auto-numbered).
 14. **Search and replace one string** - allows to search and replace a string in multiple files at once
 15. **Search and replace many strings at once** - asks for a "search and replace database" file (1st column search text, second column replace text) and does a find replace of many strings in either one or many files
 16. **Recalculate columns** — apply `new = old × factor + offset` to selected columns (same spec syntax as extract/delete). Non-numeric values and configurable number of header lines pass through unchanged.

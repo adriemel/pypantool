@@ -285,7 +285,7 @@ def run_filelist(main_window) -> None:
 
     in_paths = main_window.files
     settings = main_window.current_settings()
-    out_path = resolve_output_path(settings["pattern"], in_paths[0], main_window.run_counter)
+    out_path = unique_path(in_paths[0].parent, "Filelist_out", ".txt")
     delimiter = settings.get("delimiter", "\t")
 
     worker = FilelistWorker(

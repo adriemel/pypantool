@@ -28,7 +28,8 @@ class FilelistDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
-            "Export metadata for all loaded files to a single output file.\n"
+            "Export metadata for all loaded files to Filelist_out.txt\n"
+            "in the folder of the first file.\n"
             "Columns: Name, Path, Size (bytes), Modified."
         ))
         layout.addWidget(buttons)
