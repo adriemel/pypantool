@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from core.columns import parse_column_spec
 from core.split import split_by_columns, split_by_lines, split_by_size
+from gui.options_dialog import table_options
 from gui.run_tool import run_split
 
 
@@ -103,7 +104,6 @@ class SplitDialog(QDialog):
 
     def _accept(self) -> None:
         settings = self._mw.current_settings()
-        delimiter = settings.get("delimiter", "\t")
 
         if self._mode == "lines":
             fn = partial(
@@ -134,7 +134,7 @@ class SplitDialog(QDialog):
                 split_by_columns,
                 columns_per_file=self._cols_per_file.value(),
                 fixed_spec=spec,
-                delimiter=delimiter,
+                **table_options(settings),
             )
             label = "Split by columns"
             sequential = False

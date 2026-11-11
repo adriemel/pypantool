@@ -1,17 +1,20 @@
 """Column extraction and deletion tools.
 
 Design rules:
-- Lines that contain the delimiter are treated as tabular and get column-filtered.
-- Lines without the delimiter (comments, empty lines) are always passed through
-  unchanged, regardless of where they appear in the stream.
-- Column count is resolved from the first delimited line encountered.
-- For matched-column variants, the header is the first delimited line that does
-  not start with the comment prefix ``//``.
+- The header line is located by :func:`core.header.header_finder` (same rule
+  for every column-aware tool).  Lines before it pass through unchanged.
+- The column count is taken from the header line.
+- From the header on, lines that contain the delimiter get column-filtered.
+  Comment lines and lines without the delimiter pass through unchanged.
+- Rows shorter than the header are padded with empty cells when extracting,
+  so values never shift into another column.
 - Column numbers in user specs are 1-based; internally everything is 0-based.
 """
 
 import re
 from collections.abc import Callable, Iterable, Iterator
+
+from core.header import header_finder, is_comment
 
 
 # ── Spec parsing ──────────────────────────────────────────────────────────────
@@ -28,8 +31,8 @@ def parse_column_spec(spec: str, total: int) -> list[int]:
         Sorted list of unique 0-based column indices.
 
     Raises:
-        ValueError: If the spec is empty, contains non-integers, or a range
-                    has start > end.
+        ValueError: If the spec is empty, contains non-integers, a range has
+                    start > end, or a column is below 1 or above *total*.
     """
     if not spec.strip():
         raise ValueError("Column spec must not be empty.")
@@ -50,8 +53,9 @@ def parse_column_spec(spec: str, total: int) -> list[int]:
             raw_hi = raw_hi.strip().lower()
             hi = total if raw_hi == "end" else _parse_int(raw_hi)
             if hi < lo:
+                shown = f"end = {total}" if raw_hi == "end" else raw_hi
                 raise ValueError(
-                    f"Range start ({lo}) must be <= end ({raw_hi})."
+                    f"Range start ({lo}) must be <= end ({shown})."
                 )
             for i in range(lo - 1, hi):  # convert to 0-based
                 indices.add(i)
@@ -62,6 +66,15 @@ def parse_column_spec(spec: str, total: int) -> list[int]:
             else:
                 indices.add(_parse_int(part) - 1)  # convert to 0-based
 
+    if not indices:
+        raise ValueError("Column spec must not be empty.")
+    if min(indices) < 0:
+        raise ValueError("Column numbers must be 1 or greater.")
+    if max(indices) >= total:
+        raise ValueError(
+            f"Column {max(indices) + 1} does not exist: the header line has "
+            f"{total} column(s)."
+        )
     return sorted(indices)
 
 
@@ -74,24 +87,46 @@ def _parse_int(s: str) -> int:
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _make_picker(indices: list[int], delimiter: str) -> Callable[[str], str]:
-    """Return a function that extracts *indices* from a delimited line.
-
-    Lines that do not contain *delimiter* are returned unchanged.
-    """
-    def pick(line: str) -> str:
-        if delimiter not in line:
-            return line
-        parts = line.split(delimiter)
-        return delimiter.join(parts[i] for i in indices if i < len(parts))
-    return pick
-
-
 def _make_matcher(pattern: str, is_regex: bool) -> Callable[[str], bool]:
     if is_regex:
         rx = re.compile(pattern)
         return lambda s: bool(rx.search(s))
     return lambda s: pattern in s
+
+
+def _filter_columns(
+    lines: Iterable[str],
+    choose: Callable[[list[str]], list[int]],
+    keep_chosen: bool,
+    delimiter: str,
+    header_line: int,
+    comment_prefix: str,
+) -> Iterator[str]:
+    """Shared driver: locate the header, let *choose* pick 0-based column
+    indices from its cells, then keep or drop those columns on every row."""
+    is_header = header_finder(header_line, comment_prefix, delimiter)
+    chosen: list[int] | None = None
+    chosen_set: set[int] = set()
+
+    for lineno, line in enumerate(lines, start=1):
+        if chosen is None:
+            if not is_header(lineno, line):
+                yield line
+                continue
+            chosen = choose(line.split(delimiter))
+            chosen_set = set(chosen)
+        elif delimiter not in line or is_comment(line, comment_prefix):
+            yield line
+            continue
+
+        parts = line.split(delimiter)
+        if keep_chosen:
+            n = len(parts)
+            yield delimiter.join(parts[i] if i < n else "" for i in chosen)
+        else:
+            yield delimiter.join(
+                cell for i, cell in enumerate(parts) if i not in chosen_set
+            )
 
 
 # ── extract / delete by spec ──────────────────────────────────────────────────
@@ -100,98 +135,101 @@ def extract_columns(
     lines: Iterable[str],
     spec: str,
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[str]:
     """Yield each line keeping only the columns specified by *spec*.
 
-    Lines without *delimiter* (e.g. comment or empty lines) are passed through
-    unchanged.  Column count is determined from the first delimited line.
+    Lines before the header, comment lines and lines without *delimiter* are
+    passed through unchanged.  Rows shorter than the header are padded with
+    empty cells.
 
     Args:
-        lines:     Input line stream (without trailing newlines).
-        spec:      Column spec, e.g. ``"1-3,5-end"``. Numbers are 1-based.
-        delimiter: Field separator (default tab).
-    """
-    it = iter(lines)
-    pick: Callable[[str], str] | None = None
+        lines:          Input line stream (without trailing newlines).
+        spec:           Column spec, e.g. ``"1-3,5-end"``. Numbers are 1-based.
+        delimiter:      Field separator (default tab).
+        header_line:    Earliest 1-based line the header may be on.
+        comment_prefix: Prefix of comment lines.
 
-    for line in it:
-        if delimiter not in line:
-            yield line
-            continue
-        if pick is None:
-            total = len(line.split(delimiter))
-            pick = _make_picker(parse_column_spec(spec, total), delimiter)
-        yield pick(line)
+    Raises:
+        ValueError: If *spec* is invalid for the header's column count.
+    """
+    yield from _filter_columns(
+        lines, lambda cells: parse_column_spec(spec, len(cells)),
+        True, delimiter, header_line, comment_prefix,
+    )
 
 
 def delete_columns(
     lines: Iterable[str],
     spec: str,
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[str]:
     """Yield each line with the columns specified by *spec* removed.
 
-    Lines without *delimiter* are passed through unchanged.
+    Lines before the header, comment lines and lines without *delimiter* are
+    passed through unchanged.
 
     Args:
-        lines:     Input line stream.
-        spec:      Column spec for the columns to *remove*.
-        delimiter: Field separator (default tab).
-    """
-    it = iter(lines)
-    pick: Callable[[str], str] | None = None
+        lines:          Input line stream.
+        spec:           Column spec for the columns to *remove*.
+        delimiter:      Field separator (default tab).
+        header_line:    Earliest 1-based line the header may be on.
+        comment_prefix: Prefix of comment lines.
 
-    for line in it:
-        if delimiter not in line:
-            yield line
-            continue
-        if pick is None:
-            total = len(line.split(delimiter))
-            delete_set = set(parse_column_spec(spec, total))
-            keep = [i for i in range(total) if i not in delete_set]
-            pick = _make_picker(keep, delimiter)
-        yield pick(line)
+    Raises:
+        ValueError: If *spec* is invalid for the header's column count.
+    """
+    yield from _filter_columns(
+        lines, lambda cells: parse_column_spec(spec, len(cells)),
+        False, delimiter, header_line, comment_prefix,
+    )
 
 
 # ── extract / delete by header match ─────────────────────────────────────────
+
+def _matching(pattern: str, is_regex: bool) -> Callable[[list[str]], list[int]]:
+    matches = _make_matcher(pattern, is_regex)
+
+    def choose(cells: list[str]) -> list[int]:
+        found = [i for i, cell in enumerate(cells) if matches(cell)]
+        if not found:
+            raise ValueError(f"No column header matches {pattern!r}.")
+        return found
+
+    return choose
+
 
 def extract_matched_columns(
     lines: Iterable[str],
     pattern: str,
     is_regex: bool = False,
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[str]:
     """Yield each line keeping only columns whose header matches *pattern*.
 
-    The header is the first delimited line that does not start with ``//``.
-    Lines before the header (comment/empty lines) are passed through unchanged.
-    Lines without *delimiter* that appear after the header are also passed
-    through unchanged.
+    Lines before the header, comment lines and lines without *delimiter* are
+    passed through unchanged.
 
     Args:
-        lines:     Input line stream.
-        pattern:   Substring or regex to match against column header names.
-        is_regex:  When ``True``, *pattern* is compiled as a regular expression.
-        delimiter: Field separator (default tab).
+        lines:          Input line stream.
+        pattern:        Substring or regex to match against column header names.
+        is_regex:       When ``True``, *pattern* is compiled as a regular expression.
+        delimiter:      Field separator (default tab).
+        header_line:    Earliest 1-based line the header may be on.
+        comment_prefix: Prefix of comment lines.
+
+    Raises:
+        ValueError: If no header cell matches *pattern*.
     """
-    it = iter(lines)
-    matches = _make_matcher(pattern, is_regex)
-
-    for line in it:
-        # Pre-header: comment/empty lines without column structure.
-        if delimiter not in line or line.startswith("//"):
-            yield line
-            continue
-
-        # First real header found — build index list from matching headers.
-        headers = line.split(delimiter)
-        indices = [i for i, h in enumerate(headers) if matches(h)]
-        pick = _make_picker(indices, delimiter)
-
-        yield pick(line)
-        for remaining in it:
-            yield pick(remaining)
-        return
+    yield from _filter_columns(
+        lines, _matching(pattern, is_regex),
+        True, delimiter, header_line, comment_prefix,
+    )
 
 
 def delete_matched_columns(
@@ -199,29 +237,23 @@ def delete_matched_columns(
     pattern: str,
     is_regex: bool = False,
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[str]:
     """Yield each line with columns whose header matches *pattern* removed.
 
     Args:
-        lines:     Input line stream.
-        pattern:   Substring or regex to match against column header names.
-        is_regex:  When ``True``, *pattern* is compiled as a regular expression.
-        delimiter: Field separator (default tab).
+        lines:          Input line stream.
+        pattern:        Substring or regex to match against column header names.
+        is_regex:       When ``True``, *pattern* is compiled as a regular expression.
+        delimiter:      Field separator (default tab).
+        header_line:    Earliest 1-based line the header may be on.
+        comment_prefix: Prefix of comment lines.
+
+    Raises:
+        ValueError: If no header cell matches *pattern*.
     """
-    it = iter(lines)
-    matches = _make_matcher(pattern, is_regex)
-
-    for line in it:
-        if delimiter not in line or line.startswith("//"):
-            yield line
-            continue
-
-        headers = line.split(delimiter)
-        delete_set = {i for i, h in enumerate(headers) if matches(h)}
-        keep = [i for i in range(len(headers)) if i not in delete_set]
-        pick = _make_picker(keep, delimiter)
-
-        yield pick(line)
-        for remaining in it:
-            yield pick(remaining)
-        return
+    yield from _filter_columns(
+        lines, _matching(pattern, is_regex),
+        False, delimiter, header_line, comment_prefix,
+    )

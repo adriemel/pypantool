@@ -10,6 +10,8 @@ in place of the data line.
 from collections.abc import Iterable, Iterator
 from datetime import datetime
 
+from core.header import header_finder
+
 FORMAT_ERROR_LINE = (
     "Format of date/time is wrong. Must be yyyy-MM-ddThh:mm, "
     "yyyy-MM-ddThh:mm:ss or yyyy-MM-ddThh:mm:ss.zzz"
@@ -31,55 +33,77 @@ def extract_interval_lines(
     interval_seconds: int = 600,
     keep_header: bool = True,
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[str]:
     """Thin a time series to one line per *interval_seconds*.
 
-    The first line is treated as the header and must contain a column whose
-    name starts with ``Date/Time``.  Data lines are kept when their timestamp
-    is at least *interval_seconds* after the last kept timestamp.  The final
-    data line is always written, matching the original PanTool.
+    The header line (see :mod:`core.header`) must contain a column whose name
+    starts with ``Date/Time``.  Data lines are kept when their timestamp is at
+    least *interval_seconds* after the last kept timestamp.  The final data
+    line is always written, matching the original PanTool.
 
     Args:
         lines:            Input line stream (without trailing newlines).
         interval_seconds: Minimum spacing between kept lines. Default 600 (10 min).
-        keep_header:      When ``True``, the header line is written to the output.
+        keep_header:      When ``True``, the header line and any lines before
+                          it are written to the output.
         delimiter:        Column separator.
+        header_line:      Earliest 1-based line the header may be on.
+        comment_prefix:   Prefix of comment lines.
 
     Raises:
-        ValueError: If the header has no ``Date/Time`` column or the interval
-                    is not positive.
+        ValueError: If the header has no ``Date/Time`` column, the interval
+                    is not positive, or timestamps with and without a UTC
+                    offset are mixed.
     """
     if interval_seconds <= 0:
         raise ValueError("Interval must be a positive number of seconds.")
 
-    it = iter(lines)
-    header = next(it, None)
-    if header is None:
-        return
-
-    col = find_datetime_column(header, delimiter)
-    if col < 0:
-        raise ValueError("No 'Date/Time' column found in the header line.")
-
-    if keep_header:
-        yield header
-
+    is_header = header_finder(header_line, comment_prefix, delimiter,
+                              require_delimiter=False)
+    col = -1
+    seen_any = False
     last_kept: datetime | None = None
     pending: str | None = None
+    pending_no = 0
 
-    for line in it:
+    for lineno, line in enumerate(lines, start=1):
+        seen_any = True
+        if col < 0:
+            if is_header(lineno, line):
+                col = find_datetime_column(line, delimiter)
+                if col < 0:
+                    raise ValueError("No 'Date/Time' column found in the header line.")
+            if keep_header:
+                yield line
+            continue
+
         if pending is not None:
             dt = _parse_iso(pending, col, delimiter)
             if dt is None:
                 yield FORMAT_ERROR_LINE
-            elif last_kept is None or (dt - last_kept).total_seconds() >= interval_seconds:
+            elif last_kept is None or _seconds(last_kept, dt, pending_no) >= interval_seconds:
                 last_kept = dt
                 yield pending
-        pending = line
+        pending, pending_no = line, lineno
+
+    if seen_any and col < 0:
+        raise ValueError("No 'Date/Time' column found in the header line.")
 
     # The last data line is always written, without interval checking.
     if pending is not None:
         yield pending
+
+
+def _seconds(earlier: datetime, later: datetime, lineno: int) -> float:
+    try:
+        return (later - earlier).total_seconds()
+    except TypeError:
+        raise ValueError(
+            f"Line {lineno}: timestamps with and without a UTC offset are "
+            "mixed in the Date/Time column."
+        ) from None
 
 
 def _parse_iso(line: str, col: int, delimiter: str) -> datetime | None:

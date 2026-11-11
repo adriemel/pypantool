@@ -13,6 +13,10 @@ each index to an output file named ``<stem>_<index:04d><ext>``.
 from collections.abc import Iterable, Iterator
 
 from core.columns import parse_column_spec
+from core.header import header_finder, is_comment
+
+# Give up looking for a header after this many lines (bounds the buffer).
+MAX_PREAMBLE_LINES = 10_000
 
 
 def split_by_lines(
@@ -92,62 +96,78 @@ def split_by_columns(
     columns_per_file: int,
     fixed_spec: str = "",
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[tuple[int, str]]:
     """Split a table into chunks of *columns_per_file* data columns.
 
     Columns matching *fixed_spec* (same syntax as extract columns) are
     repeated at the front of every chunk; the remaining columns — starting
-    after the last fixed column — are dealt out in order.  Lines without the
-    delimiter (comments, empty lines) pass through unchanged to every chunk.
+    after the last fixed column — are dealt out in order.  The column count
+    comes from the header line (see :mod:`core.header`).  Lines before the
+    header, comment lines and lines without the delimiter pass through
+    unchanged to every chunk.
 
     Args:
         lines:            Input line stream (without trailing newlines).
         columns_per_file: Number of data columns per output chunk.
         fixed_spec:       Optional 1-based column spec repeated in each chunk.
         delimiter:        Column separator.
+        header_line:      Earliest 1-based line the header may be on.
+        comment_prefix:   Prefix of comment lines.
 
     Yields:
         ``(1-based chunk index, line)`` pairs, interleaved across chunks
         line by line.
 
     Raises:
-        ValueError: If *columns_per_file* is below 1, the spec is invalid, or
-                    no data columns remain after the fixed columns.
+        ValueError: If *columns_per_file* is below 1, the spec is invalid,
+                    no data columns remain after the fixed columns, or no
+                    header line is found.
     """
     if columns_per_file < 1:
         raise ValueError("Columns per file must be 1 or greater.")
 
-    it = iter(lines)
-    first = next(it, None)
-    if first is None:
-        return
+    is_header = header_finder(header_line, comment_prefix, delimiter)
+    preamble: list[str] = []
+    fixed: list[int] = []
+    chunk_ranges: list[tuple[int, int]] = []
 
-    total = len(first.split(delimiter))
-    fixed = parse_column_spec(fixed_spec, total) if fixed_spec.strip() else []
-    start = (fixed[-1] + 1) if fixed else 0
-
-    if start >= total:
-        raise ValueError("No data columns remain after the fixed columns.")
-
-    chunk_ranges = [
-        (lo, min(lo + columns_per_file, total))
-        for lo in range(start, total, columns_per_file)
-    ]
-
-    def fan_out(line: str) -> Iterator[tuple[int, str]]:
-        if delimiter not in line:
+    for lineno, line in enumerate(lines, start=1):
+        if not chunk_ranges:
+            if not is_header(lineno, line):
+                preamble.append(line)
+                if len(preamble) > MAX_PREAMBLE_LINES:
+                    break
+                continue
+            total = len(line.split(delimiter))
+            fixed = parse_column_spec(fixed_spec, total) if fixed_spec.strip() else []
+            start = (fixed[-1] + 1) if fixed else 0
+            if start >= total:
+                raise ValueError("No data columns remain after the fixed columns.")
+            chunk_ranges = [
+                (lo, min(lo + columns_per_file, total))
+                for lo in range(start, total, columns_per_file)
+            ]
+            for early in preamble:
+                for idx in range(1, len(chunk_ranges) + 1):
+                    yield idx, early
+        elif delimiter not in line or is_comment(line, comment_prefix):
             for idx in range(1, len(chunk_ranges) + 1):
                 yield idx, line
-            return
+            continue
+
         cells = line.split(delimiter)
         for idx, (lo, hi) in enumerate(chunk_ranges, start=1):
-            picked = [cells[i] for i in fixed if i < len(cells)]
+            picked = [cells[i] if i < len(cells) else "" for i in fixed]
             picked += cells[lo:hi]
             yield idx, delimiter.join(picked)
 
-    yield from fan_out(first)
-    for line in it:
-        yield from fan_out(line)
+    if preamble and not chunk_ranges:
+        raise ValueError(
+            "No header line containing the column delimiter was found. "
+            "Check the delimiter and header line in File › Options."
+        )
 
 
 def _split_sequential(

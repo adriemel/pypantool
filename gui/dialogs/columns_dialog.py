@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.columns import delete_columns, extract_columns
+from gui.options_dialog import table_options
 from gui.run_tool import run_tool
 
 
@@ -62,9 +63,8 @@ class ColumnsDialog(QDialog):
             return
 
         settings = self._mw.current_settings()
-        delimiter = settings["delimiter"]
         fn = extract_columns if self._mode == "extract" else delete_columns
         label = "Extract columns" if self._mode == "extract" else "Delete columns"
 
         self.accept()
-        run_tool(self._mw, partial(fn, spec=spec, delimiter=delimiter), label)
+        run_tool(self._mw, partial(fn, spec=spec, **table_options(settings)), label)

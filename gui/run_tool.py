@@ -54,6 +54,19 @@ def run_tool(
     ]
     out_paths = [out for _, out in jobs]
 
+    existing = [out for out in out_paths if out.exists()]
+    if existing:
+        listing = "\n".join(p.name for p in existing[:10])
+        if len(existing) > 10:
+            listing += f"\n… and {len(existing) - 10} more"
+        answer = QMessageBox.question(
+            main_window, label,
+            f"{len(existing)} output file(s) already exist and will be "
+            f"overwritten:\n\n{listing}\n\nContinue?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
     worker = ProcessWorker(
         jobs=jobs,
         process_fn=process_fn,

@@ -1,0 +1,11 @@
+/* DATA DESCRIPTION:
+Citation:	Doe, J (2024): Test profile. PANGAEA
+Parameter(s):	DEPTH, water [m] (Depth water)
+	Temperature, water [°C] (Temp)
+*/
+Event	Date/Time	Depth water [m]	Temp [°C]	Sal
+PS001	2024-01-15T08:00	10	-1.820	34.12
+PS001	2024-01-15T08:05	20	-1.80	34.15
+// mid-file comment	with a tab
+PS001	2024-01-15T08:20	50	-1.5
+PS001	2024-01-15T08:40	100	n.d.	34.35

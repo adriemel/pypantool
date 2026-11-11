@@ -7,7 +7,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.columns import (
-    _make_picker,
     delete_columns,
     delete_matched_columns,
     extract_columns,
@@ -198,10 +197,9 @@ class TestExtractMatchedColumns(unittest.TestCase):
         self.assertEqual(result[1], ALL_LINES[1])
         self.assertEqual(result[2], ALL_LINES[2])
 
-    def test_no_match_returns_empty_rows(self):
-        result = list(extract_matched_columns(ALL_LINES, "NOTEXIST"))
-        # Header and all data lines become empty strings.
-        self.assertEqual(result[3], "")
+    def test_no_match_raises(self):
+        with self.assertRaises(ValueError):
+            list(extract_matched_columns(ALL_LINES, "NOTEXIST"))
 
     def test_match_station_column(self):
         result = list(extract_matched_columns(ALL_LINES, "Station"))

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.rename import preview_renames
+from core.rename import preview_renames, rename_problem
 
 
 class RenameDialog(QDialog):
@@ -51,6 +51,10 @@ class RenameDialog(QDialog):
         self._preview_table.verticalHeader().setVisible(False)
         self._preview_table.verticalHeader().setDefaultSectionSize(22)
 
+        self._problem = QLabel("")
+        self._problem.setStyleSheet("color: #A85A00;")
+        self._problem.setWordWrap(True)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -64,6 +68,7 @@ class RenameDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(QLabel("Preview:"))
         layout.addWidget(self._preview_table)
+        layout.addWidget(self._problem)
         layout.addWidget(buttons)
 
         self._update_preview()
@@ -82,7 +87,9 @@ class RenameDialog(QDialog):
             self._preview_table.setItem(row, 0, old_item)
             self._preview_table.setItem(row, 1, new_item)
         self._preview_table.resizeColumnToContents(0)
-        self._ok_button.setEnabled(has_change)
+        problem = rename_problem(pairs) if has_change else None
+        self._problem.setText(problem or "")
+        self._ok_button.setEnabled(has_change and problem is None)
 
     def _params(self) -> dict:
         return {

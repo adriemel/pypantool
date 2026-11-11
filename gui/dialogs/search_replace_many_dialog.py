@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from core.search_replace import load_replacements, search_replace_many
 from gui.run_tool import run_tool
+from gui.worker import _codec
 
 
 class SearchReplaceManyDialog(QDialog):
@@ -77,11 +78,18 @@ class SearchReplaceManyDialog(QDialog):
         delimiter = settings.get("delimiter", "\t")
 
         try:
-            with open(db_path, encoding=settings["in_encoding"], errors="replace") as fh:
+            with open(db_path, encoding=_codec(settings["in_encoding"])) as fh:
                 lines = [line.rstrip("\n") for line in fh]
             replacements = load_replacements(lines, delimiter=delimiter)
         except OSError as exc:
             QMessageBox.warning(self, "Error", str(exc))
+            return
+        except UnicodeDecodeError:
+            QMessageBox.warning(
+                self, "Wrong encoding",
+                f"The database file is not valid {settings['in_encoding']}.\n"
+                "Choose its real encoding under File › Options › Input encoding.",
+            )
             return
 
         if not replacements:

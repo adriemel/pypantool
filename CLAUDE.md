@@ -43,7 +43,7 @@ Support PanTool's pattern system for output filenames:
 - `%E` = original file extension
 - Example: `%N_processed.txt` turns `data.tab` into `data_processed.txt`
 
-User configures this once in File > Options. Default: `%N_out.txt`
+User configures this once in File > Options. Default: `%N_out%E`
 
 ## Feature Set — Basic Tools Menu
 
@@ -97,6 +97,24 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 ## Column Delimiter
 
 Default delimiter: tab (`\t`). Allow user override in Options (tab, semicolon, comma, pipe, space).
+
+## Header Line and Comments (shared rule)
+
+All column-aware tools locate the header with `core/header.py::header_finder`; never re-implement header detection in a tool. The header is the first line that
+- is not inside a leading `/* ... */` block (PANGAEA download metadata),
+- is on or after the Options setting "Header is on or after line" (default 1),
+- does not start with the Options comment prefix (default `//`),
+- contains the delimiter.
+
+Lines before the header, comment lines and lines without the delimiter pass through unchanged. GUI dialogs pass these settings with `table_options(settings)`.
+
+## Data Safety Rules
+
+- Decode input strictly (no `errors="replace"`); report file, byte and line on failure. UTF-8 input drops a BOM.
+- Output keeps the input's line ending (CRLF or LF).
+- Never overwrite silently: ask (per-file tools) or refuse (split chunks, decompress).
+- Invalid column specs (column < 1 or beyond the header width, header pattern without match) are errors, never empty output.
+- Recalculation uses `decimal.Decimal` so written precision is preserved.
 
 ## Code Style
 

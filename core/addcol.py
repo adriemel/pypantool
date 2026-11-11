@@ -1,12 +1,16 @@
 """Add a constant column and/or metadata columns to every line.
 
-The first line is treated as the header: it receives *header_text* and the
+The header line (see :mod:`core.header`) receives *header_text* and the
 metadata column names (``Event label``, ``Filename``, ``No``).  Data lines
 receive *column_text*, the file's name/path, and a 1-based ordinal number.
+Lines before the header, comment lines and empty lines pass through unchanged
+and are not counted.
 """
 
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+
+from core.header import header_finder, is_comment
 
 
 def add_column(
@@ -21,6 +25,8 @@ def add_column(
     add_ordinal: bool = False,
     meta_position: str = "prepend",
     delimiter: str = "\t",
+    header_line: int = 1,
+    comment_prefix: str = "//",
 ) -> Iterator[str]:
     """Add a user column and/or metadata columns to every line.
 
@@ -36,6 +42,8 @@ def add_column(
         add_ordinal:   Add a ``No`` column with a 1-based data line counter.
         meta_position: ``"prepend"`` or ``"append"`` — where metadata columns go.
         delimiter:     Column separator.
+        header_line:   Earliest 1-based line the header may be on.
+        comment_prefix: Prefix of comment lines.
 
     Raises:
         ValueError: If *position* or *meta_position* is invalid, or nothing
@@ -53,18 +61,27 @@ def add_column(
     stem = in_path.stem if in_path else ""
     full = str(in_path.resolve()) if in_path else ""
 
-    it = iter(lines)
-    header = next(it, None)
-    if header is None:
-        return
-
+    is_header = header_finder(header_line, comment_prefix, delimiter,
+                              require_delimiter=False)
     meta_header = _meta_cells(add_filename, add_full_path, add_ordinal,
                               "Event label", "Filename", "No")
-    yield _assemble(header, header_text if add_user_column else None,
-                    position, meta_header if add_meta else None,
-                    meta_position, delimiter)
+    header_found = False
+    ordinal = 0
 
-    for ordinal, line in enumerate(it, start=1):
+    for lineno, line in enumerate(lines, start=1):
+        if not header_found:
+            if not is_header(lineno, line):
+                yield line
+                continue
+            header_found = True
+            yield _assemble(line, header_text if add_user_column else None,
+                            position, meta_header if add_meta else None,
+                            meta_position, delimiter)
+            continue
+        if line == "" or is_comment(line, comment_prefix):
+            yield line
+            continue
+        ordinal += 1
         meta = _meta_cells(add_filename, add_full_path, add_ordinal,
                            stem, full, str(ordinal))
         yield _assemble(line, column_text if add_user_column else None,

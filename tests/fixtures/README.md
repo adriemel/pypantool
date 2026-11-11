@@ -21,3 +21,11 @@ Same 11-column structure, 8 lines (1 comment + 1 header + 6 data).
 Different stations (PS005, PS006). Use with test_data.txt to verify:
 - Concatenate by lines (with skip-header option)
 - Concatenate by columns (row counts differ — should error or warn)
+
+## test_pangaea_header.txt (for header-detection tests)
+Tab-delimited PANGAEA-style download, 11 lines. Contains:
+- A `/* ... */` metadata block (lines 1-5) whose lines contain tabs
+- Header on line 6 (5 columns), 4 data lines
+- 1 comment line containing a tab (line 9)
+- 1 short row with 4 cells (line 10) and 1 non-numeric value `n.d.` (line 11)
+- Trailing zeros (`-1.820`, `-1.80`) for precision-preserving recalculation

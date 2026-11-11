@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.recalc import recalculate_columns
+from gui.options_dialog import table_options
 from gui.run_tool import run_tool
 
 _DELIM_NAMES = {"\t": "tab", ";": "semicolon", ",": "comma", "|": "pipe", " ": "space"}
@@ -30,7 +31,8 @@ class RecalcDialog(QDialog):
         self.setMinimumWidth(380)
 
         settings = main_window.current_settings()
-        self._delimiter = settings.get("delimiter", "\t")
+        self._table_options = table_options(settings)
+        self._delimiter = self._table_options["delimiter"]
         delim_name = _DELIM_NAMES.get(self._delimiter, repr(self._delimiter))
 
         self._spec = QLineEdit()
@@ -82,7 +84,7 @@ class RecalcDialog(QDialog):
                 spec=spec,
                 factor=factor,
                 offset=offset,
-                delimiter=self._delimiter,
+                **self._table_options,
                 header_lines=self._header_lines.value(),
             ),
             "Recalculate columns",

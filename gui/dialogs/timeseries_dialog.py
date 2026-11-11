@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.timeseries import extract_interval_lines
+from gui.options_dialog import table_options
 from gui.run_tool import run_tool
 
 
@@ -55,7 +56,6 @@ class TimeseriesDialog(QDialog):
 
     def _accept(self) -> None:
         settings = self._mw.current_settings()
-        delimiter = settings.get("delimiter", "\t")
 
         self.accept()
         run_tool(
@@ -64,7 +64,7 @@ class TimeseriesDialog(QDialog):
                 extract_interval_lines,
                 interval_seconds=self._interval.value(),
                 keep_header=self._keep_header.isChecked(),
-                delimiter=delimiter,
+                **table_options(settings),
             ),
             "Extract 10 min lines",
         )

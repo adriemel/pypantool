@@ -45,3 +45,34 @@ def preview_renames(
         (path, path.parent / apply_rename(path.name, search=search, replace=replace, prefix=prefix, suffix=suffix))
         for path in paths
     ]
+
+
+_FORBIDDEN = '<>:"/\\|?*'
+
+
+def rename_problem(pairs: list[tuple[Path, Path]]) -> str | None:
+    """Return why *pairs* cannot be renamed safely, or ``None`` if they can.
+
+    Checks for empty or invalid new names, two files mapped to the same
+    name, and targets that already exist on disk.
+
+    Args:
+        pairs: ``(old_path, new_path)`` pairs from :func:`preview_renames`.
+    """
+    changed = [(old, new) for old, new in pairs if old != new]
+    sources = {str(old).lower() for old, _ in changed}
+    seen: set[str] = set()
+    for old, new in pairs:
+        key = str(new).lower()
+        if key in seen:
+            return f"Several files would be named {new.name}."
+        seen.add(key)
+    for old, new in changed:
+        if new == old.parent or not Path(new.name).stem.strip():
+            return f"{old.name} would get an empty name."
+        bad = sorted(set(new.name) & set(_FORBIDDEN))
+        if bad:
+            return f"{new.name} contains characters not allowed in file names: {' '.join(bad)}"
+        if new.exists() and str(new).lower() not in sources:
+            return f"{new.name} already exists in the folder."
+    return None

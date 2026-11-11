@@ -1,8 +1,9 @@
 """Compress and decompress files and folders using the Python stdlib.
 
 All operations stream in fixed-size chunks — archive members are never read
-into memory as a whole.  Archives are created next to their source; existing
-targets are overwritten.
+into memory as a whole.  Archives are created next to their source; an
+existing archive of the same name is overwritten.  Decompression never
+overwrites: it stops before extracting if a target file already exists.
 
 ``compress_file_zip``    — ``data.tab``  → ``data.tab.zip`` (single member)
 ``compress_file_gzip``   — ``data.tab``  → ``data.tab.gz``
@@ -108,25 +109,42 @@ def decompress_file(path: Path) -> list[Path]:
     Raises:
         ValueError: If the extension is not ``.zip``, ``.gz``, ``.tgz``
                     or ``.tar``.
+        FileExistsError: If a file to be extracted already exists.
     """
     suffix = path.suffix.lower()
     target_dir = path.parent
 
     if suffix == ".zip":
         with zipfile.ZipFile(path) as zf:
+            targets = [target_dir / name for name in zf.namelist()
+                       if not name.endswith("/")]
+            _refuse_existing(targets)
             zf.extractall(target_dir)
-            return [target_dir / name for name in zf.namelist()
-                    if not name.endswith("/")]
+            return targets
 
     if suffix in (".tar", ".tgz") or path.name.lower().endswith(".tar.gz"):
         with tarfile.open(path) as tf:
+            targets = [target_dir / m.name for m in tf.getmembers() if m.isfile()]
+            _refuse_existing(targets)
             tf.extractall(target_dir, filter="data")
-            return [target_dir / m.name for m in tf.getmembers() if m.isfile()]
+            return targets
 
     if suffix == ".gz":
         out = path.with_name(path.name[: -len(".gz")])
+        _refuse_existing([out])
         with gzip.open(path, "rb") as fh_in, open(out, "wb") as fh_out:
             shutil.copyfileobj(fh_in, fh_out, _CHUNK)
         return [out]
 
     raise ValueError(f"Unsupported archive type: {path.name}")
+
+
+def _refuse_existing(targets: list[Path]) -> None:
+    existing = [t for t in targets if t.exists()]
+    if existing:
+        names = ", ".join(t.name for t in existing[:5])
+        more = f" and {len(existing) - 5} more" if len(existing) > 5 else ""
+        raise FileExistsError(
+            f"would overwrite existing file(s): {names}{more}. "
+            "Nothing was extracted."
+        )

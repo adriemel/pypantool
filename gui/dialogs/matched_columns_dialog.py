@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.columns import delete_matched_columns, extract_matched_columns
+from gui.options_dialog import table_options
 from gui.run_tool import run_tool
 
 
@@ -65,7 +66,6 @@ class MatchedColumnsDialog(QDialog):
             return
 
         settings = self._mw.current_settings()
-        delimiter = settings["delimiter"]
         fn = (
             extract_matched_columns
             if self._mode == "extract"
@@ -81,6 +81,6 @@ class MatchedColumnsDialog(QDialog):
         run_tool(
             self._mw,
             partial(fn, pattern=pattern, is_regex=self._is_regex.isChecked(),
-                    delimiter=delimiter),
+                    **table_options(settings)),
             label,
         )

@@ -51,7 +51,7 @@ class TestEmitFilelist(unittest.TestCase):
         parts = result[1].split("\t")
         self.assertEqual(len(parts), 4)
         timestamp = parts[3]
-        self.assertRegex(timestamp, r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+        self.assertRegex(timestamp, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
     def test_row_order_matches_input_order(self):
         result = list(emit_filelist([FIXTURE_A, FIXTURE_B]))

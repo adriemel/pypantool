@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.addcol import add_column
+from gui.options_dialog import table_options
 from gui.run_tool import run_tool
 
 
@@ -101,7 +102,6 @@ class AddColumnDialog(QDialog):
             return
 
         settings = self._mw.current_settings()
-        delimiter = settings.get("delimiter", "\t")
 
         self.accept()
         run_tool(
@@ -115,7 +115,7 @@ class AddColumnDialog(QDialog):
                 add_full_path=add_full_path,
                 add_ordinal=add_ordinal,
                 meta_position="prepend" if self._meta_prepend.isChecked() else "append",
-                delimiter=delimiter,
+                **table_options(settings),
             ),
             "Add column",
             pass_path=True,

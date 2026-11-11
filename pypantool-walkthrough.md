@@ -1,6 +1,19 @@
 # PyPanTool — Plain-English Walkthrough
 
 ## What Changed
+**2026-11-11** — Safety fixes after a code review; no new tools.
+
+- **One header rule for all column tools** (new `core/header.py`). The header is the first line that is not inside a leading `/* ... */` block (PANGAEA downloads), is on or after the "Header is on or after line" setting in File › Options, does not start with the comment prefix, and contains the delimiter. Everything before it is copied unchanged. Extract/delete columns, the matched-column tools, Split by columns, Recalculate, Extract 10 min lines and Add column all use it. Before, each tool guessed differently and a PANGAEA metadata block could produce empty output.
+- **Column specs are checked.** Column `0` or a column beyond the header width is now an error instead of silently returning the wrong (or no) column. A header pattern that matches nothing is an error too.
+- **Short rows are padded, not shifted** when extracting columns; comment lines containing a delimiter are left alone.
+- **Recalculate keeps the written precision.** It uses exact decimal arithmetic: `12.50 × 1` stays `12.50`, long integers keep all digits, no exponent notation. `nan`, `1_000` and decimal commas are left unchanged as text.
+- **Strict decoding.** A file that is not valid in the chosen input encoding stops the run with a message naming file, byte and approximate line; before, the bad characters were silently replaced by `�`. A UTF-8 byte-order mark is dropped on reading.
+- **Line endings are kept.** A CRLF input gives CRLF output, an LF input gives LF output (before, everything became LF).
+- **No silent overwriting.** Per-file tools ask before overwriting existing outputs; Split refuses to overwrite existing chunks; Decompress refuses to overwrite existing files.
+- **Rename** shows a warning and disables OK when two files would get the same name, a name is empty or invalid, or the target exists.
+- **Save file list** writes `Modified` as ISO 8601 in UTC (`2024-01-15T08:00:00Z`).
+- **Extract 10 min lines** reports mixed timestamps (with and without UTC offset) with the line number instead of crashing.
+
 **2026-07-02** — Fifteen new tools were added, completing the full "Basic tools" menu of the original C++ PanTool. New abilities: thin a time series to one line per 10 minutes, insert/replace characters at fixed positions, add columns or text lines/blocks, search for a string across files and get a match report, split one file into many (by lines, by columns, or by size), and compress/decompress files and folders (zip, gz, tar.gz). Six new processing modules, six new dialogs, and two new background worker types were added; tests grew from 162 to 243.
 
 ---

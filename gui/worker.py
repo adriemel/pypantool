@@ -13,6 +13,11 @@ stream, reports progress and honours cancellation (``requestInterruption``)
 every ``PROGRESS_INTERVAL`` input lines.  A cancelled or failed run removes
 the partial output it was writing and emits ``error(CANCELLED)`` or
 ``error(message)``.
+
+Inputs are decoded strictly: bytes that are invalid in the chosen input
+encoding stop the run with a message instead of being replaced.  A UTF-8
+byte-order mark is dropped.  Outputs keep the line ending (CRLF or LF) of
+the input they were made from.
 """
 
 import contextlib
@@ -50,6 +55,8 @@ class _StreamWorker(QThread):
         self._total_bytes = max(total_bytes, 1)
         self._read_bytes = 0
         self._read_lines = 0
+        self._in_fh: Any = None
+        self._in_path: Path | None = None
 
     def _metered(self, lines: Iterable[str]) -> Iterator[str]:
         """Pass *lines* through while counting them for progress and cancel."""
@@ -69,8 +76,40 @@ class _StreamWorker(QThread):
 
     def _open_lines(self, path: Path, encoding: str) -> Iterator[str]:
         """Open *path* on first read; yield metered lines without newline."""
-        with open(path, encoding=encoding, errors="replace") as fh:
+        self._in_path = path
+        with open(path, encoding=_codec(encoding)) as fh:
+            self._in_fh = fh
             yield from self._metered(_stripped_lines(fh))
+
+    def _write_lines(self, out_lines: Iterable[str], fh_out: Any) -> None:
+        """Write *out_lines* using the line ending of the input being read."""
+        eol = "\n"
+        decided = False
+        for out_line in out_lines:
+            if not decided:
+                newlines = self._in_fh.newlines if self._in_fh is not None else None
+                if newlines is not None:
+                    decided = True
+                    eol = "\r\n" if newlines == "\r\n" else "\n"
+            fh_out.write(out_line + eol)
+
+    def _describe(self, exc: Exception, encoding: str) -> str:
+        """Readable error text; decoding failures name the file and position."""
+        name = self._in_path.name if self._in_path else "input"
+        if isinstance(exc, UnicodeDecodeError):
+            bad = exc.object[exc.start]
+            return (
+                f"{name}: not valid {encoding} (byte 0x{bad:02X} near "
+                f"line {self._read_lines + 1:,}). Nothing was written. Choose the "
+                "file's real encoding under File › Options › Input encoding."
+            )
+        if isinstance(exc, UnicodeEncodeError):
+            return (
+                f"{name}: character {exc.object[exc.start]!r} cannot be written "
+                f"in the output encoding ({exc.encoding}). Nothing was written. "
+                "Choose UTF-8 under File › Options › Output encoding."
+            )
+        return f"{name}: {exc}"
 
 
 class ProcessWorker(_StreamWorker):
@@ -135,7 +174,7 @@ class ProcessWorker(_StreamWorker):
                 self.error.emit(CANCELLED)
                 return
             except Exception as exc:  # noqa: BLE001
-                self.error.emit(f"{in_path.name}: {exc}")
+                self.error.emit(self._describe(exc, self._in_encoding))
                 return
             self.file_done.emit(idx, out_path)
         self.all_done.emit()
@@ -150,8 +189,7 @@ class ProcessWorker(_StreamWorker):
                 out_lines = self._process_fn(lines, in_path)
             else:
                 out_lines = self._process_fn(lines)
-            for out_line in out_lines:
-                fh_out.write(out_line + "\n")
+            self._write_lines(out_lines, fh_out)
         # Final progress tick so the GUI always reaches the real line count.
         self._emit_progress()
 
@@ -207,7 +245,7 @@ class ConcatWorker(_StreamWorker):
             self.error.emit(CANCELLED)
             return
         except Exception as exc:  # noqa: BLE001
-            self.error.emit(str(exc))
+            self.error.emit(self._describe(exc, self._in_encoding))
             return
         if self._trash_inputs:
             self.trash_failures = [
@@ -221,8 +259,7 @@ class ConcatWorker(_StreamWorker):
             (p.name, self._open_lines(p, self._in_encoding)) for p in self._in_paths
         )
         with _output(self._out_path, self._out_encoding) as fh_out:
-            for out_line in self._process_fn(inputs):
-                fh_out.write(out_line + "\n")
+            self._write_lines(self._process_fn(inputs), fh_out)
         self._emit_progress()
 
 
@@ -326,7 +363,7 @@ class SplitWorker(_StreamWorker):
             except Exception as exc:  # noqa: BLE001
                 for p in current:
                     _remove(p)
-                self.error.emit(f"{in_path.name}: {exc}")
+                self.error.emit(self._describe(exc, self._in_encoding))
                 return
             created.extend(current)
         self.all_done.emit(created)
@@ -350,12 +387,18 @@ class SplitWorker(_StreamWorker):
                     )
                     if is_input(out_path):
                         raise ValueError(f"Chunk {out_path.name} would overwrite a loaded file.")
+                    if out_path.exists():
+                        raise ValueError(
+                            f"Chunk {out_path.name} already exists. Move or delete "
+                            "the old chunks first; nothing was overwritten."
+                        )
+                    eol = "\r\n" if self._in_fh.newlines == "\r\n" else "\n"
                     fh = stack.enter_context(
                         open(out_path, "w", encoding=self._out_encoding, newline="")
                     )
                     handles[chunk_idx] = fh
                     created.append(out_path)
-                fh.write(line + "\n")
+                fh.write(line + eol)
         self._emit_progress()
 
 
@@ -484,6 +527,11 @@ class LineCountWorker(QThread):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _codec(encoding: str) -> str:
+    """Python codec for an Options encoding name; UTF-8 input drops a BOM."""
+    return "utf-8-sig" if encoding.upper().replace("-", "") == "UTF8" else encoding
+
 
 def _stripped_lines(fh: Iterable[str]) -> Iterator[str]:
     """Yield lines with the trailing newline removed."""
