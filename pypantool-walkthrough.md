@@ -1,6 +1,14 @@
 # PyPanTool — Plain-English Walkthrough
 
 ## What Changed
+**2026-11-11 (later)** — New: **File statistics**. Select one file in the list and press the "File Statistics…" toolbar button (or Ctrl+I, or double-click the file). The app reads the file once in the background and opens a window that describes it; the file itself is never changed.
+
+- **Top of the window (the file):** whether the file is valid in the input encoding chosen in Options (and where the first invalid byte is), whether it has a byte-order mark, which line endings it uses (CRLF, LF or mixed), how many lines it has, which line is the header, and whether any rows have more or fewer cells than the header (with the first line numbers).
+- **Table (one row per column):** type (numeric, text, mixed, date/time), how many cells are filled or empty, smallest and largest value as written in the file, number of decimals, number of distinct values (exact up to 1000), missing-value markers such as `NA`, `NaN`, `n.d.` or `-999` with their counts, and under Notes the first few values that are not numbers (for example `<0.05` or `1,5`) with their line numbers. For a `Date/Time` column it shows first and last timestamp and counts timestamps that are not ISO 8601, repeat the previous one, or go back in time.
+- **Things worth a look are shown in amber.** Fill values such as `-999` are counted as markers and left out of min/max.
+- **Save report…** writes the same information as `<name>_stats.txt` next to the file.
+- **Where the code lives:** `core/profile.py` does the counting, `gui/dialogs/stats_dialog.py` is the window, `StatsWorker` in `gui/worker.py` runs the scan in the background. The list of missing-value markers is at the top of `core/profile.py` (`TEXT_MARKERS`, `NUMERIC_MARKERS`) and can be extended there.
+
 **2026-11-11** — Safety fixes after a code review; no new tools.
 
 - **One header rule for all column tools** (new `core/header.py`). The header is the first line that is not inside a leading `/* ... */` block (PANGAEA downloads), is on or after the "Header is on or after line" setting in File › Options, does not start with the comment prefix, and contains the delimiter. Everything before it is copied unchanged. Extract/delete columns, the matched-column tools, Split by columns, Recalculate, Extract 10 min lines and Add column all use it. Before, each tool guessed differently and a PANGAEA metadata block could produce empty output.

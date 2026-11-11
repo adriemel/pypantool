@@ -25,6 +25,7 @@ from gui.worker import (
     ProcessWorker,
     RenameWorker,
     SplitWorker,
+    StatsWorker,
 )
 
 
@@ -314,6 +315,33 @@ def run_filelist(main_window) -> None:
         main_window.set_idle("Done — 1 file written")
 
     main_window.set_busy("Save file list")
+    worker.done.connect(_on_done)
+
+    main_window.attach_worker(worker)
+
+
+def run_stats(main_window, path: Path) -> None:
+    """Scan *path* in the background and show its statistics window.
+
+    Args:
+        main_window: The :class:`~gui.main_window.MainWindow` instance.
+        path:        File to describe.  Nothing is written or changed.
+    """
+    from gui.dialogs.stats_dialog import StatsDialog
+    from gui.options_dialog import table_options
+
+    settings = main_window.current_settings()
+    worker = StatsWorker(
+        path=path,
+        in_encoding=settings["in_encoding"],
+        table_options=table_options(settings),
+    )
+
+    def _on_done(profile) -> None:
+        main_window.set_idle(f"Statistics: {path.name}")
+        StatsDialog(main_window, path, profile, settings).exec()
+
+    main_window.set_busy(f"Statistics: {path.name}")
     worker.done.connect(_on_done)
 
     main_window.attach_worker(worker)

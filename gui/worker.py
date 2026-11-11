@@ -7,6 +7,7 @@
 ``RenameWorker``    — rename files in place.
 ``CompressWorker``  — apply a file-level operation (compress/decompress) per path.
 ``LineCountWorker`` — count lines of loaded files for the file list.
+``StatsWorker``     — scan one file and return its statistics (no output file).
 
 The three streaming workers share :class:`_StreamWorker`: it meters the input
 stream, reports progress and honours cancellation (``requestInterruption``)
@@ -29,6 +30,7 @@ from PySide6.QtCore import QFile, QThread, Signal
 
 from core.filelist import count_newlines
 from core.naming import input_matcher, output_problem
+from core.profile import profile_lines
 
 CANCELLED = "Cancelled by user."
 
@@ -488,6 +490,46 @@ class CompressWorker(QThread):
                 return
             produced.extend(result if isinstance(result, list) else [result])
         self.all_done.emit(produced)
+
+
+class StatsWorker(_StreamWorker):
+    """Scan one file with :func:`core.profile.profile_lines`.
+
+    The file is read with its line endings and with invalid bytes kept as
+    surrogate escapes, so the scan reports them instead of failing.
+
+    Signals:
+        done(object): The :class:`~core.profile.TableProfile`.
+    """
+
+    done = Signal(object)
+
+    def __init__(
+        self,
+        path: Path,
+        in_encoding: str = "UTF-8",
+        table_options: dict | None = None,
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self._path = path
+        self._in_encoding = in_encoding
+        self._table_options = table_options or {}
+
+    def run(self) -> None:
+        try:
+            self._reset_meter(self._path.stat().st_size)
+            with open(self._path, encoding=self._in_encoding,
+                      errors="surrogateescape", newline="") as fh:
+                profile = profile_lines(self._metered(fh), **self._table_options)
+            self._emit_progress()
+        except _Cancelled:
+            self.error.emit(CANCELLED)
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(f"{self._path.name}: {exc}")
+            return
+        self.done.emit(profile)
 
 
 class LineCountWorker(QThread):

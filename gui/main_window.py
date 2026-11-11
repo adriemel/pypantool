@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self._table.verticalHeader().setVisible(False)
         self._table.verticalHeader().setDefaultSectionSize(26)
         self._table.setShowGrid(True)
+        self._table.cellDoubleClicked.connect(lambda _row, _col: self._run_stats())
         self._stack.addWidget(self._table)
 
         layout.addWidget(self._stack)
@@ -153,6 +154,17 @@ class MainWindow(QMainWindow):
         # ── Tools menu ────────────────────────────────────────────────────────
         self._tools_menu = menubar.addMenu("&Tools")
         self._tools_menu.setEnabled(False)  # enabled once files are loaded
+
+        self._act_stats = QAction("File S&tatistics…", self)
+        self._act_stats.setShortcut("Ctrl+I")
+        self._act_stats.setToolTip(
+            "Scan the selected file: min/max per column, missing-value markers,\n"
+            "encoding, line endings, row width (Ctrl+I or double-click a file)"
+        )
+        self._act_stats.setEnabled(False)
+        self._act_stats.triggered.connect(self._run_stats)
+        self._tools_menu.addAction(self._act_stats)
+        self._tools_menu.addSeparator()
 
         self._add_tool("E&xtract Columns…", self._run_extract_columns)
         self._add_tool("Extract Matched C&olumns…", self._run_extract_matched_columns)
@@ -215,6 +227,8 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._act_folder)
         toolbar.addSeparator()
         toolbar.addAction(self._act_clear)
+        toolbar.addSeparator()
+        toolbar.addAction(self._act_stats)
 
     # ── File loading ───────────────────────────────────────────────────────────
 
@@ -246,6 +260,7 @@ class MainWindow(QMainWindow):
         self._rows.clear()
         self._table.setRowCount(0)
         self._tools_menu.setEnabled(False)
+        self._act_stats.setEnabled(False)
         self._stack.setCurrentIndex(0)
         self._set_status("Ready")
 
@@ -280,6 +295,7 @@ class MainWindow(QMainWindow):
         if new_paths:
             self._stack.setCurrentIndex(1)
             self._tools_menu.setEnabled(True)
+            self._act_stats.setEnabled(True)
             self._set_status(f"{len(self._files)} file(s) loaded")
             self._start_line_count()
 
@@ -297,6 +313,7 @@ class MainWindow(QMainWindow):
         else:
             self._stack.setCurrentIndex(0)
         self._tools_menu.setEnabled(bool(self._files))
+        self._act_stats.setEnabled(bool(self._files))
         self._set_status(f"{len(self._files)} file(s) loaded")
         self._start_line_count()
 
@@ -448,6 +465,24 @@ class MainWindow(QMainWindow):
         self._tools_menu.addAction(act)
 
     # ── Tool action handlers ───────────────────────────────────────────────────
+
+    def _run_stats(self) -> None:
+        from gui.run_tool import run_stats
+        if self._worker is not None or not self._files:
+            return
+        row = self._table.currentRow()
+        if row < 0 and len(self._files) == 1:
+            row = 0
+        if not 0 <= row < len(self._files):
+            QMessageBox.information(
+                self, "File statistics", "Select one file in the list first."
+            )
+            return
+        path = self._files[row]
+        if not path.is_file():
+            QMessageBox.warning(self, "File statistics", f"File not found:\n{path}")
+            return
+        run_stats(self, path)
 
     def _run_extract_columns(self) -> None:
         from gui.dialogs.columns_dialog import ColumnsDialog

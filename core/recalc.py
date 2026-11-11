@@ -8,7 +8,7 @@ from core.columns import parse_column_spec
 from core.header import header_finder, is_comment
 
 # Plain decimal numbers only: no "nan", "inf", "1_000" or decimal commas.
-_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+PLAIN_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
 
 
 def recalculate_columns(
@@ -63,7 +63,7 @@ def recalculate_columns(
             continue
         parts = line.split(delimiter)
         for i in col_set:
-            if i < len(parts) and _NUMBER.fullmatch(parts[i].strip()):
+            if i < len(parts) and PLAIN_NUMBER.fullmatch(parts[i].strip()):
                 value = Decimal(parts[i].strip()) * dec_factor + dec_offset
                 parts[i] = format(value, "f")
         yield delimiter.join(parts)
