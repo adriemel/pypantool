@@ -91,10 +91,18 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 
 ## GUI Layout
 
-- Main window: menu bar + file list (shows loaded files with path, size, line count)
-- Status bar: current operation, file progress, line progress
-- Dialogs: one small dialog per tool with only the needed parameters
-- No ribbon, no tabs, no sidebar. Keep it minimal.
+Top to bottom, one window, no ribbon, no tabs, no sidebar:
+
+- **Menu bar** grouped by what a tool works on: File, Columns, Lines, Text, Combine / Split, Files, Help. New tools go into the fitting group via `_add_tool_menu` in `gui/main_window.py`; mnemonics must be unique within a menu. Help › Find Tool (Ctrl+K) filters all tools by name.
+- **Toolbar**: Open files, Select folder, Clear, File Statistics; on the right a chip showing delimiter, encodings, header line and name pattern (click opens Options). Menus and toolbar are disabled while a tool runs.
+- **Context line**: file count, total size, common folder.
+- **File list**: name, folder (only shown when files come from several folders), size (SI units), lines, columns, and a quick sniff of the first 64 kB (encoding validity, line endings, ragged rows; problems in amber). Sniff and line counts run in `LineCountWorker`.
+- **Peek pane**: first 200 lines of the selected file (at most 256 kB are read) with column numbers and line numbers; header row highlighted.
+- **Journal**: one line per tool run (time, tool, parameters, files in → out, lines in → out, duration). "Step back" (Ctrl+Z) reloads the previous file set; "Save journal…" writes a tab-delimited log with UTC timestamps. Parameters come from the `functools.partial` passed to `run_*` (`describe_params`).
+- **Status bar**: current operation, progress, Cancel.
+- **Dialogs**: one small dialog per tool; the action button carries the verb and is the default button. Dialogs that take a column spec show what it selects in the first file.
+
+Style lives in `gui/style.py` (paper/ink palette; teal = selection, amber = needs attention; numbers and file content in a monospaced font via `mono_font()`). Spin boxes, combo boxes and check boxes are deliberately left native.
 
 ## Column Delimiter
 

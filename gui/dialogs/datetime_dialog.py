@@ -1,7 +1,6 @@
 """Dialog for Convert Date/Time to ISO 8601."""
 
 from functools import partial
-from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -17,10 +16,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.datetime_convert import convert_datetime
-from core.header import header_finder, is_comment
 from gui.options_dialog import table_options
+from gui.peek import header_and_first_row
 from gui.run_tool import run_tool
-from gui.worker import _codec
 
 _FORMATS = [
     "dd.MM.yyyy HH:mm:ss", "dd.MM.yyyy HH:mm", "dd.MM.yyyy", "d.M.yyyy H:mm",
@@ -34,29 +32,7 @@ _HELP = (
     "in single quotes. Special formats: excel (serial day), unix (seconds).\n"
     "With a separate time column, describe date and time separated by one space."
 )
-_MAX_PEEK_LINES = 10_000
 _SHOWN_FAILURES = 5
-
-
-def _peek(path: Path, encoding: str, options: dict) -> tuple[str, str] | None:
-    """Return (header line, first data line) of *path*, or None if unreadable."""
-    is_header = header_finder(options["header_line"], options["comment_prefix"],
-                              options["delimiter"], require_delimiter=False)
-    header: str | None = None
-    try:
-        with open(path, encoding=_codec(encoding)) as fh:
-            for lineno, raw in enumerate(fh, start=1):
-                line = raw.rstrip("\n")
-                if header is None:
-                    if is_header(lineno, line):
-                        header = line
-                elif line and not is_comment(line, options["comment_prefix"]):
-                    return header, line
-                if lineno >= _MAX_PEEK_LINES:
-                    break
-    except (OSError, UnicodeError):
-        return None
-    return None
 
 
 class DateTimeDialog(QDialog):
@@ -71,7 +47,9 @@ class DateTimeDialog(QDialog):
         self._settings = main_window.current_settings()
         self._options = table_options(self._settings)
         first = main_window.files[0]
-        self._sample = _peek(first, self._settings["in_encoding"], self._options)
+        self._sample = header_and_first_row(
+            first, self._settings["in_encoding"], self._options
+        )
         names = self._sample[0].split(self._options["delimiter"]) if self._sample else []
 
         self._date_col = QComboBox()
@@ -117,6 +95,7 @@ class DateTimeDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Convert")
         self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)

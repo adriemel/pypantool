@@ -48,6 +48,7 @@ class CharPosDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Insert" if mode == "insert" else "Replace")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
 

@@ -1,108 +1,152 @@
-"""Main application window."""
+"""Main application window.
 
+Layout, top to bottom: menu bar, toolbar (file actions and the current
+settings), context line, then a vertical splitter with the file list, the
+peek pane (first lines of the selected file) and the journal (one line per
+tool run).  The status bar shows progress.
+"""
+
+import os
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
+    QDialog,
     QFileDialog,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from gui.options_dialog import OptionsDialog, load_settings
+from core.header import header_finder, is_comment
+from core.recalc import PLAIN_NUMBER
+from gui.options_dialog import OptionsDialog, load_settings, table_options
+from gui.peek import PEEK_LINES, head_lines
+from gui.style import AMBER, MUTED, TEAL, mono_font
 from gui.worker import CANCELLED, LineCountWorker
+
+_DELIMITER_NAMES = {"\t": "tab", ";": "semicolon", ",": "comma", "|": "pipe", " ": "space"}
+_RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+_MAX_PEEK_COLUMNS = 200
+
+
+def human_size(size: int) -> str:
+    """File size in SI units (1 kB = 1000 B)."""
+    if size < 1000:
+        return f"{size} B"
+    for unit, factor in (("kB", 1e3), ("MB", 1e6), ("GB", 1e9)):
+        if size < factor * 1000 or unit == "GB":
+            return f"{size / factor:,.1f} {unit}"
+    return f"{size} B"
 
 
 class MainWindow(QMainWindow):
-    """Main window: menu bar, toolbar, file list table, status bar, drag-and-drop."""
+    """Main window: menus, toolbar, file list, peek pane, journal, status bar."""
 
     # Column indices for the file list table.
     COL_NAME = 0
-    COL_PATH = 1
+    COL_FOLDER = 1
     COL_SIZE = 2
     COL_LINES = 3
+    COL_COLS = 4
+    COL_SNIFF = 5
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PyPanTool")
-        self.resize(980, 580)
+        self.resize(1080, 700)
         self.setAcceptDrops(True)
 
         # Loaded files: list of Path objects (current input set).
         self._files: list[Path] = []
+        # Earlier file sets, newest last (for "Step back").
+        self._history: list[list[Path]] = []
         # Run counter for %a substitution; increments after each tool run.
         self._run_counter: int = 1
         # Active worker thread (kept alive until done).
         self._worker: QThread | None = None
-        # Background line counter for the file list; paused while a tool runs.
+        # Background sniff + line counter for the file list; paused while a tool runs.
         self._count_worker: LineCountWorker | None = None
         self._line_counts: dict[Path, int] = {}
+        self._sniffed: set[Path] = set()
         # Table row of each loaded path.
         self._rows: dict[Path, int] = {}
         # Status text of the running operation (progress is appended to it).
         self._busy_message = ""
+        # Journal: finished runs, and the run in progress.
+        self._journal: list[dict] = []
+        self._pending: dict | None = None
         # Set on close so late worker signals do not start new threads.
         self._closing = False
 
         self._build_ui()
         self._build_menu()
         self._build_toolbar()
+        self._refresh_context()
 
     # ── UI construction ────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("central")
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(8, 8, 8, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Stack: page 0 = drop placeholder, page 1 = file table
-        self._stack = QStackedWidget()
+        # Context line: what is loaded, and from where.
+        context_row = QHBoxLayout()
+        context_row.setContentsMargins(14, 9, 14, 9)
+        context_row.setSpacing(10)
+        self._context = QLabel()
+        self._context.setObjectName("context")
+        self._context_folder = QLabel()
+        self._context_folder.setObjectName("monoMuted")
+        self._context_folder.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        context_row.addWidget(self._context)
+        context_row.addWidget(self._context_folder, 1)
+        layout.addLayout(context_row)
 
-        # Page 0 — empty state / drop zone
+        # Stack: page 0 = drop placeholder, page 1 = file list / peek / journal
+        self._stack = QStackedWidget()
         placeholder = QLabel(
-            "Drop files here\n\nor  File › Open  /  File › Select folder"
+            "Drop files or folders here\n\nor  File › Open files  /  File › Select folder"
         )
         placeholder.setObjectName("dropPlaceholder")
         self._stack.addWidget(placeholder)
 
-        # Page 1 — file list table
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Name", "Path", "Size", "Lines"])
-        self._table.horizontalHeader().setSectionResizeMode(
-            self.COL_PATH, QHeaderView.ResizeMode.Stretch
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            self.COL_NAME, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            self.COL_SIZE, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            self.COL_LINES, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setAlternatingRowColors(True)
-        self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(26)
-        self._table.setShowGrid(True)
-        self._table.cellDoubleClicked.connect(lambda _row, _col: self._run_stats())
-        self._stack.addWidget(self._table)
-
-        layout.addWidget(self._stack)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._build_file_table())
+        splitter.addWidget(self._build_peek())
+        splitter.addWidget(self._build_journal())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 1)
+        splitter.setSizes([250, 250, 110])
+        self._stack.addWidget(splitter)
+        layout.addWidget(self._stack, 1)
 
         # Status bar
         self._status_label = QLabel("Ready")
@@ -113,12 +157,115 @@ class MainWindow(QMainWindow):
         self._cancel_btn = QPushButton("Cancel")
         self._cancel_btn.setVisible(False)
         self._cancel_btn.clicked.connect(self._cancel_worker)
+        self.statusBar().setSizeGripEnabled(False)
         self.statusBar().addWidget(self._status_label, 1)
         self.statusBar().addPermanentWidget(self._progress)
         self.statusBar().addPermanentWidget(self._cancel_btn)
+        self.statusBar().addPermanentWidget(QLabel("Ctrl+K  find tool"))
+
+    def _build_file_table(self) -> QTableWidget:
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(
+            ["NAME", "FOLDER", "SIZE", "LINES", "COLS", "FIRST 64 kB"]
+        )
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setHighlightSections(False)
+        for col, width in ((self.COL_FOLDER, 200), (self.COL_SIZE, 90),
+                           (self.COL_LINES, 100), (self.COL_COLS, 60),
+                           (self.COL_SNIFF, 280)):
+            table.setColumnWidth(col, width)
+        left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        for col in range(6):
+            numeric = col in (self.COL_SIZE, self.COL_LINES, self.COL_COLS)
+            table.horizontalHeaderItem(col).setTextAlignment(_RIGHT if numeric else left)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setShowGrid(False)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(24)
+        table.cellDoubleClicked.connect(lambda _row, _col: self._run_stats())
+        table.currentCellChanged.connect(lambda *_: self._refresh_peek())
+        self._table = table
+        return table
+
+    def _build_peek(self) -> QWidget:
+        pane = QWidget()
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(14, 7, 14, 6)
+        head.setSpacing(10)
+        caption = QLabel("PEEK")
+        caption.setObjectName("caption")
+        self._peek_name = QLabel()
+        self._peek_info = QLabel()
+        self._peek_info.setObjectName("monoMuted")
+        head.addWidget(caption)
+        head.addWidget(self._peek_name)
+        head.addStretch(1)
+        head.addWidget(self._peek_info)
+        layout.addLayout(head)
+
+        table = QTableWidget(0, 0)
+        table.setObjectName("peek")
+        table.setFont(mono_font())
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.ContiguousSelection)
+        table.verticalHeader().setDefaultSectionSize(21)
+        table.verticalHeader().setDefaultAlignment(_RIGHT)
+        table.horizontalHeader().setHighlightSections(False)
+        table.verticalHeader().setHighlightSections(False)
+        self._peek = table
+        layout.addWidget(table, 1)
+        return pane
+
+    def _build_journal(self) -> QWidget:
+        pane = QWidget()
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(14, 7, 8, 6)
+        caption = QLabel("JOURNAL")
+        caption.setObjectName("caption")
+        self._back_btn = QPushButton("Step back  Ctrl+Z")
+        self._save_journal_btn = QPushButton("Save journal…")
+        for button in (self._back_btn, self._save_journal_btn):
+            button.setObjectName("link")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setEnabled(False)
+        self._back_btn.clicked.connect(self._step_back)
+        self._save_journal_btn.clicked.connect(self._save_journal)
+        head.addWidget(caption)
+        head.addStretch(1)
+        head.addWidget(self._back_btn)
+        head.addWidget(self._save_journal_btn)
+        layout.addLayout(head)
+
+        table = QTableWidget(0, 6)
+        table.setFont(mono_font())
+        table.horizontalHeader().setVisible(False)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(21)
+        table.setShowGrid(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for col, width in ((0, 84), (1, 210), (3, 90), (4, 220), (5, 80)):
+            table.setColumnWidth(col, width)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._journal_table = table
+        layout.addWidget(table, 1)
+        return pane
 
     def _build_menu(self) -> None:
         menubar = self.menuBar()
+        self._tool_menus: list = []
+        self._tool_actions: list[tuple[str, QAction]] = []
 
         # ── File menu ──────────────────────────────────────────────────────────
         file_menu = menubar.addMenu("&File")
@@ -133,6 +280,20 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._act_folder)
 
         file_menu.addSeparator()
+
+        self._act_stats = QAction("File S&tatistics…", self)
+        self._act_stats.setShortcut("Ctrl+I")
+        self._act_stats.setToolTip(
+            "Scan the selected file: min/max per column, missing-value markers,\n"
+            "encoding, line endings, row width (Ctrl+I or double-click a file)"
+        )
+        self._act_stats.triggered.connect(self._run_stats)
+        file_menu.addAction(self._act_stats)
+
+        self._act_back = QAction("Step &back to previous files", self)
+        self._act_back.setShortcut("Ctrl+Z")
+        self._act_back.triggered.connect(self._step_back)
+        file_menu.addAction(self._act_back)
 
         self._act_clear = QAction("&Clear file list", self)
         self._act_clear.triggered.connect(self._clear_files)
@@ -151,85 +312,112 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
-        # ── Tools menu ────────────────────────────────────────────────────────
-        self._tools_menu = menubar.addMenu("&Tools")
-        self._tools_menu.setEnabled(False)  # enabled once files are loaded
-
-        self._act_stats = QAction("File S&tatistics…", self)
-        self._act_stats.setShortcut("Ctrl+I")
-        self._act_stats.setToolTip(
-            "Scan the selected file: min/max per column, missing-value markers,\n"
-            "encoding, line endings, row width (Ctrl+I or double-click a file)"
-        )
-        self._act_stats.setEnabled(False)
-        self._act_stats.triggered.connect(self._run_stats)
-        self._tools_menu.addAction(self._act_stats)
-        self._tools_menu.addSeparator()
-
-        self._add_tool("E&xtract Columns…", self._run_extract_columns)
-        self._add_tool("Extract Matched C&olumns…", self._run_extract_matched_columns)
-        self._tools_menu.addSeparator()
-        self._add_tool("D&elete Columns…", self._run_delete_columns)
-        self._add_tool("Delete Matched Col&umns…", self._run_delete_matched_columns)
-        self._add_tool("&Recalculate Columns…", self._run_recalc_columns)
-        self._add_tool("Convert Date/Time to ISO &8601…", self._run_convert_datetime)
-        self._tools_menu.addSeparator()
-        self._add_tool("&Extract Lines…", self._run_extract_lines)
-        self._add_tool("Extract &Matched Lines…", self._run_extract_matched_lines)
-        self._add_tool("Extract 10 min L&ines…", self._run_extract_10min_lines)
-        self._tools_menu.addSeparator()
-        self._add_tool("&Delete Lines…", self._run_delete_lines)
-        self._add_tool("Delete M&atched Lines…", self._run_delete_matched_lines)
-        self._tools_menu.addSeparator()
-        self._add_tool("Delete &Comment Blocks…", self._run_delete_comments)
-        self._add_tool("Delete &Double Lines…", self._run_delete_doubles)
-        self._tools_menu.addSeparator()
-        self._add_tool("Concatenate by &Lines…", self._run_concat_lines)
-        self._add_tool("Concatenate by C&olumns…", self._run_concat_columns)
-        self._tools_menu.addSeparator()
-        self._add_tool("Split by Line&s…", self._run_split_lines)
-        self._add_tool("Split by Colu&mns…", self._run_split_columns)
-        self._add_tool("Split Lar&ge File…", self._run_split_large)
-        self._tools_menu.addSeparator()
-        self._add_tool("Search &One String…", self._run_search_one)
-        self._add_tool("&Search and Replace…", self._run_search_replace)
-        self._add_tool("Search and Replace &Many…", self._run_search_replace_many)
-        self._tools_menu.addSeparator()
-        self._add_tool("&Insert Characters at Positions…", self._run_insert_chars)
-        self._add_tool("Replace Charac&ters at Positions…", self._run_replace_chars)
-        self._tools_menu.addSeparator()
-        self._add_tool("Add Colum&n…", self._run_add_column)
-        self._add_tool("Add Text L&ine…", self._run_add_line)
-        self._add_tool("Add Text &Block…", self._run_add_block)
-        self._tools_menu.addSeparator()
-        self._add_tool("Save &File List…", self._run_save_filelist)
-        self._tools_menu.addSeparator()
-        self._add_tool("Re&name Files…", self._run_rename_files)
-        self._tools_menu.addSeparator()
-        self._add_tool("Compress Files (&zip)", self._run_compress_files_zip)
-        self._add_tool("Compress Files (&gz)", self._run_compress_files_gzip)
-        self._add_tool("Compress Folder (zip)…", self._run_compress_folder_zip)
-        self._add_tool("Compress Folder (tar.gz)…", self._run_compress_folder_targz)
-        self._add_tool("Decompress Files", self._run_decompress_files)
+        # ── Tool menus, grouped by what they work on ──────────────────────────
+        self._add_tool_menu("&Columns", [
+            ("&Extract Columns…", self._run_extract_columns),
+            ("Extract &Matched Columns…", self._run_extract_matched_columns),
+            None,
+            ("&Delete Columns…", self._run_delete_columns),
+            ("Delete M&atched Columns…", self._run_delete_matched_columns),
+            None,
+            ("&Recalculate Columns…", self._run_recalc_columns),
+            ("Convert Date/Time to &ISO 8601…", self._run_convert_datetime),
+            ("Add Colum&n…", self._run_add_column),
+        ])
+        self._add_tool_menu("&Lines", [
+            ("&Extract Lines…", self._run_extract_lines),
+            ("Extract &Matched Lines…", self._run_extract_matched_lines),
+            ("Extract &10 min Lines…", self._run_extract_10min_lines),
+            None,
+            ("&Delete Lines…", self._run_delete_lines),
+            ("Delete M&atched Lines…", self._run_delete_matched_lines),
+            ("Delete &Comment Blocks…", self._run_delete_comments),
+            ("Delete Do&uble Lines…", self._run_delete_doubles),
+            None,
+            ("Add Text &Line…", self._run_add_line),
+            ("Add Text &Block…", self._run_add_block),
+        ])
+        self._add_tool_menu("&Text", [
+            ("Search &One String…", self._run_search_one),
+            ("&Search and Replace…", self._run_search_replace),
+            ("Search and Replace &Many…", self._run_search_replace_many),
+            None,
+            ("&Insert Characters at Positions…", self._run_insert_chars),
+            ("&Replace Characters at Positions…", self._run_replace_chars),
+        ])
+        self._add_tool_menu("Combine / &Split", [
+            ("Concatenate by &Lines…", self._run_concat_lines),
+            ("Concatenate by &Columns…", self._run_concat_columns),
+            None,
+            ("Split by L&ines…", self._run_split_lines),
+            ("Split by C&olumns…", self._run_split_columns),
+            ("Split Lar&ge File…", self._run_split_large),
+        ])
+        self._add_tool_menu("F&iles", [
+            ("Save &File List…", self._run_save_filelist),
+            ("&Rename Files…", self._run_rename_files),
+            None,
+            ("Compress Files (&zip)", self._run_compress_files_zip),
+            ("Compress Files (&gz)", self._run_compress_files_gzip),
+            ("&Decompress Files", self._run_decompress_files),
+        ])
+        # Folder compression picks its own folder, so it works without loaded files.
+        files_menu = self._tool_menus[-1]
+        files_menu.addSeparator()
+        for name, slot in (("Compress F&older (zip)…", self._run_compress_folder_zip),
+                           ("Compress Folder (&tar.gz)…", self._run_compress_folder_targz)):
+            act = QAction(name, self)
+            act.triggered.connect(slot)
+            files_menu.addAction(act)
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = menubar.addMenu("&Help")
+        act_find = QAction("&Find Tool…", self)
+        act_find.setShortcut("Ctrl+K")
+        act_find.triggered.connect(self._find_tool)
+        help_menu.addAction(act_find)
         act_about = QAction("&About", self)
         act_about.triggered.connect(self._show_about)
         help_menu.addAction(act_about)
+
+    def _add_tool_menu(self, title: str, entries: list) -> None:
+        """Add a menu of tools that need loaded files (``None`` = separator)."""
+        menu = self.menuBar().addMenu(title)
+        self._tool_menus.append(menu)
+        group = title.replace("&", "")
+        for entry in entries:
+            if entry is None:
+                menu.addSeparator()
+                continue
+            name, slot = entry
+            act = QAction(name, self)
+            act.triggered.connect(slot)
+            menu.addAction(act)
+            self._tool_actions.append((group, act))
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Quick Actions", self)
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         self.addToolBar(toolbar)
+        self._toolbar = toolbar
 
         toolbar.addAction(self._act_open)
         toolbar.addAction(self._act_folder)
-        toolbar.addSeparator()
         toolbar.addAction(self._act_clear)
         toolbar.addSeparator()
         toolbar.addAction(self._act_stats)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+
+        # Current settings, always visible; click to change them.
+        self._settings_chip = QToolButton()
+        self._settings_chip.setObjectName("settingsChip")
+        self._settings_chip.setToolTip("Settings used by every tool. Click to change.")
+        self._settings_chip.clicked.connect(self._show_options)
+        toolbar.addWidget(self._settings_chip)
 
     # ── File loading ───────────────────────────────────────────────────────────
 
@@ -255,20 +443,15 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No files", "No files found in that folder.")
 
     def _clear_files(self) -> None:
-        self._stop_line_count()
-        self._files.clear()
-        self._line_counts.clear()
-        self._rows.clear()
-        self._table.setRowCount(0)
-        self._tools_menu.setEnabled(False)
-        self._act_stats.setEnabled(False)
-        self._stack.setCurrentIndex(0)
+        if self._files:
+            self._history.append(list(self._files))
+        self._set_files([])
         self._set_status("Ready")
 
     # ── Drag and drop ──────────────────────────────────────────────────────────
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() and self._worker is None:
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
@@ -289,66 +472,139 @@ class MainWindow(QMainWindow):
     def add_files(self, paths: list[Path]) -> None:
         """Add *paths* to the file list, skipping already-loaded duplicates."""
         existing = set(self._files)
-        new_paths = [p for p in paths if p not in existing]
+        new_paths = [p for p in dict.fromkeys(paths) if p not in existing]
+        if not new_paths:
+            return
         for path in new_paths:
             self._files.append(path)
             self._add_table_row(path)
-        if new_paths:
-            self._stack.setCurrentIndex(1)
-            self._tools_menu.setEnabled(True)
-            self._act_stats.setEnabled(True)
-            self._set_status(f"{len(self._files)} file(s) loaded")
-            self._start_line_count()
+        self._after_list_change()
+        self._set_status(f"{len(self._files)} file(s) loaded")
 
     def replace_files(self, paths: list[Path]) -> None:
-        """Replace the entire file list (used after a tool run for chaining)."""
+        """Replace the entire file list (used after a tool run for chaining).
+
+        The previous list is remembered for "Step back".
+        """
+        if self._files and list(paths) != self._files:
+            self._history.append(list(self._files))
+        if self._pending is not None:
+            self._pending["outputs"] = list(paths)
+        self._set_files(list(paths))
+        self._set_status(f"{len(self._files)} file(s) loaded")
+
+    def _set_files(self, paths: list[Path]) -> None:
         self._stop_line_count()
-        self._files = list(paths)
+        self._files = paths
         self._line_counts.clear()
+        self._sniffed.clear()
         self._rows.clear()
         self._table.setRowCount(0)
         for path in self._files:
             self._add_table_row(path)
-        if self._files:
-            self._stack.setCurrentIndex(1)
-        else:
-            self._stack.setCurrentIndex(0)
-        self._tools_menu.setEnabled(bool(self._files))
-        self._act_stats.setEnabled(bool(self._files))
-        self._set_status(f"{len(self._files)} file(s) loaded")
+        self._after_list_change()
+
+    def _after_list_change(self) -> None:
+        has_files = bool(self._files)
+        self._stack.setCurrentIndex(1 if has_files else 0)
+        folders = {p.parent for p in self._files}
+        self._table.setColumnHidden(self.COL_FOLDER, len(folders) <= 1)
+        if has_files and self._table.currentRow() < 0:
+            self._table.selectRow(0)
+        self._refresh_context()
+        self._refresh_actions()
+        self._refresh_peek()
         self._start_line_count()
 
     def _add_table_row(self, path: Path) -> None:
         row = self._table.rowCount()
         self._table.insertRow(row)
         self._rows[path] = row
-        self._table.setItem(row, self.COL_NAME, QTableWidgetItem(path.name))
-        self._table.setItem(row, self.COL_PATH, QTableWidgetItem(str(path.parent)))
-        size_kb = path.stat().st_size / 1024 if path.exists() else 0
-        self._table.setItem(row, self.COL_SIZE, QTableWidgetItem(f"{size_kb:,.1f} KB"))
-        self._table.setItem(row, self.COL_LINES, QTableWidgetItem("—"))
+        name = QTableWidgetItem(path.name)
+        name.setToolTip(str(path))
+        self._table.setItem(row, self.COL_NAME, name)
+        folder = QTableWidgetItem(str(path.parent))
+        folder.setForeground(QColor(MUTED))
+        self._table.setItem(row, self.COL_FOLDER, folder)
+        try:
+            size_text = human_size(path.stat().st_size)
+        except OSError:
+            size_text = "missing"
+        for col, text in ((self.COL_SIZE, size_text), (self.COL_LINES, "…"),
+                          (self.COL_COLS, ""), (self.COL_SNIFF, "")):
+            item = QTableWidgetItem(text)
+            item.setFont(mono_font())
+            if col != self.COL_SNIFF:
+                item.setTextAlignment(_RIGHT)
+            self._table.setItem(row, col, item)
 
-    # ── Line counts (background) ───────────────────────────────────────────────
+    def _refresh_context(self) -> None:
+        if not self._files:
+            self._context.setText("No files loaded")
+            self._context_folder.setText("")
+            return
+        total = 0
+        for path in self._files:
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+        count = len(self._files)
+        self._context.setText(
+            f"{count} file{'s' if count != 1 else ''}  ·  {human_size(total)}"
+        )
+        try:
+            folder = os.path.commonpath([str(p.parent) for p in self._files])
+        except ValueError:
+            folder = "several drives"
+        self._context_folder.setText(folder)
+
+    def _refresh_actions(self) -> None:
+        idle = self._worker is None
+        has_files = bool(self._files)
+        for menu in self._tool_menus:
+            for act in menu.actions():
+                if any(act is tool for _, tool in self._tool_actions):
+                    act.setEnabled(has_files)
+        self._act_stats.setEnabled(has_files)
+        self._act_clear.setEnabled(has_files)
+        self._act_back.setEnabled(bool(self._history) and idle)
+        self._back_btn.setEnabled(bool(self._history) and idle)
+        self._save_journal_btn.setEnabled(bool(self._journal))
+        settings = load_settings()
+        delimiter = _DELIMITER_NAMES.get(settings["delimiter"], repr(settings["delimiter"]))
+        self._settings_chip.setText(
+            f"{delimiter}  ·  {settings['in_encoding']} → {settings['out_encoding']}"
+            f"  ·  header ≥ line {settings['header_line']}  ·  {settings['pattern']}"
+        )
+
+    # ── Sniff and line counts (background) ─────────────────────────────────────
 
     def _start_line_count(self) -> None:
-        """Count lines of all loaded files not counted yet, in the background."""
+        """Sniff and count all loaded files not done yet, in the background."""
         if self._closing or self._worker is not None:
             return  # resumed in _on_worker_finished
         self._stop_line_count()
-        todo = [p for p in self._files if p not in self._line_counts]
-        if not todo:
+        to_count = [p for p in self._files if p not in self._line_counts]
+        to_sniff = [p for p in self._files if p not in self._sniffed]
+        if not to_count and not to_sniff:
             return
-        worker = LineCountWorker(todo)
+        settings = load_settings()
+        worker = LineCountWorker(
+            to_count, to_sniff, settings["in_encoding"], table_options(settings)
+        )
         worker.counted.connect(self._on_line_counted)
+        worker.sniffed.connect(self._on_sniffed)
         self._count_worker = worker
         worker.start()
 
     def _stop_line_count(self) -> None:
-        """Stop the line counter so no file is held open (e.g. before a rename)."""
+        """Stop the background reader so no file is held open (e.g. before a rename)."""
         worker = self._count_worker
         if worker is None:
             return
         worker.counted.disconnect(self._on_line_counted)
+        worker.sniffed.disconnect(self._on_sniffed)
         worker.requestInterruption()
         worker.wait()
         self._count_worker = None
@@ -356,11 +612,211 @@ class MainWindow(QMainWindow):
     def _on_line_counted(self, path: Path, count: int) -> None:
         self._line_counts[path] = count
         row = self._rows.get(path)
+        if row is not None:
+            self._table.item(row, self.COL_LINES).setText(f"{count:,}")
+        self._fill_journal_lines()
+
+    def _on_sniffed(self, path: Path, profile) -> None:
+        self._sniffed.add(path)
+        row = self._rows.get(path)
         if row is None:
             return
-        item = self._table.item(row, self.COL_LINES)
-        if item:
-            item.setText(f"{count:,}")
+        encoding = load_settings()["in_encoding"]
+        notes: list[str] = []
+        attention = False
+        if profile.invalid_lines:
+            notes.append(f"not {encoding} (byte 0x{profile.invalid_first_byte:02X}, "
+                         f"line {profile.invalid_first_line:,})")
+            attention = True
+        else:
+            notes.append(encoding + (" with BOM" if profile.has_bom else ""))
+        endings = [name for count, name in ((profile.crlf, "CRLF"), (profile.lf, "LF"),
+                                             (profile.cr, "CR")) if count]
+        if len(endings) > 1:
+            notes.append("mixed line endings")
+            attention = True
+        elif endings:
+            notes.append(endings[0])
+        cols_item = self._table.item(row, self.COL_COLS)
+        if not profile.header_lineno:
+            notes.append("no header found")
+            cols_item.setText("–")
+            attention = True
+        elif profile.ragged_rows:
+            low = min(profile.ragged_min, len(profile.columns))
+            high = max(profile.ragged_max, len(profile.columns))
+            cols_item.setText(f"{low}–{high}")
+            cols_item.setForeground(QColor(AMBER))
+            notes.append("ragged rows")
+            attention = True
+        else:
+            cols_item.setText(str(len(profile.columns)))
+        item = self._table.item(row, self.COL_SNIFF)
+        item.setText("  ·  ".join(notes))
+        item.setForeground(QColor(AMBER if attention else MUTED))
+        if attention:
+            item.setToolTip("Run File Statistics (Ctrl+I) for details.")
+
+    # ── Peek pane ──────────────────────────────────────────────────────────────
+
+    def _selected_path(self) -> Path | None:
+        row = self._table.currentRow()
+        if row < 0 and len(self._files) == 1:
+            row = 0
+        return self._files[row] if 0 <= row < len(self._files) else None
+
+    def _refresh_peek(self) -> None:
+        """Show the first lines of the selected file with column numbers."""
+        table = self._peek
+        table.clear()
+        table.clearSpans()
+        table.setRowCount(0)
+        table.setColumnCount(0)
+        path = self._selected_path()
+        self._peek_name.setText(path.name if path else "")
+        self._peek_info.setText("")
+        if path is None:
+            return
+        settings = load_settings()
+        options = table_options(settings)
+        try:
+            lines = head_lines(path, settings["in_encoding"])
+        except (OSError, LookupError) as exc:
+            self._peek_info.setText(str(exc))
+            return
+
+        delimiter, prefix = options["delimiter"], options["comment_prefix"]
+        is_header = header_finder(options["header_line"], prefix, delimiter)
+        header_no = 0
+        rows: list[list[str] | None] = []   # None = show the line unsplit
+        for lineno, line in enumerate(lines, start=1):
+            if not header_no:
+                if is_header(lineno, line):
+                    header_no = lineno
+                    rows.append(line.split(delimiter))
+                else:
+                    rows.append(None)
+            elif delimiter not in line or is_comment(line, prefix):
+                rows.append(None)
+            else:
+                rows.append(line.split(delimiter))
+        width = min(max((len(r) for r in rows if r), default=1), _MAX_PEEK_COLUMNS)
+
+        table.setColumnCount(width)
+        table.setRowCount(len(rows))
+        table.setHorizontalHeaderLabels([str(i) for i in range(1, width + 1)])
+        table.setVerticalHeaderLabels([str(i) for i in range(1, len(rows) + 1)])
+        for r, (cells, line) in enumerate(zip(rows, lines)):
+            if cells is None:
+                item = QTableWidgetItem(line)
+                item.setForeground(QColor(MUTED))
+                table.setItem(r, 0, item)
+                if width > 1:
+                    table.setSpan(r, 0, 1, width)
+                continue
+            for c, text in enumerate(cells[:width]):
+                item = QTableWidgetItem(text)
+                if r + 1 == header_no:
+                    item.setFont(mono_font(bold=True))
+                    item.setForeground(QColor(TEAL))
+                elif PLAIN_NUMBER.fullmatch(text.strip()):
+                    item.setTextAlignment(_RIGHT)
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+        for c in range(width):
+            table.setColumnWidth(c, min(max(table.columnWidth(c) + 10, 70), 320))
+        more = "first " if len(lines) >= PEEK_LINES else ""
+        header_text = f"header = line {header_no}" if header_no else "no header found"
+        self._peek_info.setText(f"{more}{len(lines)} lines  ·  {header_text}")
+
+    # ── Journal and step back ──────────────────────────────────────────────────
+
+    def _total_lines(self, paths: list[Path]) -> int | None:
+        if not paths or any(p not in self._line_counts for p in paths):
+            return None
+        return sum(self._line_counts[p] for p in paths)
+
+    def _finish_journal_entry(self, status: str) -> None:
+        entry = self._pending
+        self._pending = None
+        if entry is None:
+            return
+        entry["status"] = entry.get("status") or status
+        entry["seconds"] = time.monotonic() - entry.pop("t0")
+        self._journal.append(entry)
+        row = self._journal_table.rowCount()
+        self._journal_table.insertRow(row)
+        outputs = entry.get("outputs")
+        files = str(len(entry["inputs"]))
+        if outputs is not None:
+            files += f" → {len(outputs)}"
+        shown = entry["label"] if entry["status"] == "done" else (
+            f"{entry['label']} ({entry['status']})")
+        cells = (entry["time"].astimezone().strftime("%H:%M:%S"), shown,
+                 entry["detail"], f"{files} files", "", f"{entry['seconds']:.1f} s")
+        for col, text in enumerate(cells):
+            item = QTableWidgetItem(text)
+            if col in (0, 5):
+                item.setForeground(QColor(MUTED))
+            if entry["status"] != "done" and col == 1:
+                item.setForeground(QColor(AMBER))
+            if col >= 3:
+                item.setTextAlignment(_RIGHT)
+            item.setToolTip(text)
+            self._journal_table.setItem(row, col, item)
+        self._journal_table.scrollToBottom()
+        self._fill_journal_lines()
+
+    def _fill_journal_lines(self) -> None:
+        """Complete "lines in → out" of the latest entry once counts are known."""
+        if not self._journal:
+            return
+        entry = self._journal[-1]
+        if entry.get("lines_out") is not None or not entry.get("outputs"):
+            return
+        entry["lines_out"] = self._total_lines(entry["outputs"])
+        if entry["lines_out"] is None:
+            return
+        before = "?" if entry["lines_in"] is None else f"{entry['lines_in']:,}"
+        item = self._journal_table.item(self._journal_table.rowCount() - 1, 4)
+        item.setText(f"{before} → {entry['lines_out']:,} lines")
+
+    def _step_back(self) -> None:
+        """Load the file set that was in the list before the last change."""
+        if not self._history or self._worker is not None:
+            return
+        previous = self._history.pop()
+        existing = [p for p in previous if p.is_file()]
+        self._set_files(existing)
+        missing = len(previous) - len(existing)
+        note = f" ({missing} no longer exist)" if missing else ""
+        self._set_status(f"Stepped back to {len(existing)} file(s){note}")
+
+    def _save_journal(self) -> None:
+        start = str(self._files[0].parent / "PyPanTool_journal.txt") if self._files else ""
+        name, _ = QFileDialog.getSaveFileName(
+            self, "Save journal", start, "Text files (*.txt);;All files (*)"
+        )
+        if not name:
+            return
+        header = ("Time (UTC)", "Tool", "Parameters", "Status", "Duration [s]",
+                  "Lines in", "Lines out", "Input files", "Output files")
+        try:
+            with open(name, "w", encoding="utf-8", newline="") as fh:
+                fh.write("\t".join(header) + "\r\n")
+                for e in self._journal:
+                    fh.write("\t".join((
+                        e["time"].strftime("%Y-%m-%dT%H:%M:%SZ"), e["label"], e["detail"],
+                        e["status"], f"{e['seconds']:.1f}",
+                        "" if e["lines_in"] is None else str(e["lines_in"]),
+                        "" if e.get("lines_out") is None else str(e["lines_out"]),
+                        "; ".join(str(p) for p in e["inputs"]),
+                        "; ".join(str(p) for p in e.get("outputs") or []),
+                    )) + "\r\n")
+        except OSError as exc:
+            QMessageBox.warning(self, "Save journal", str(exc))
+            return
+        self._set_status(f"Journal saved: {Path(name).name}")
 
     # ── Progress / status helpers ──────────────────────────────────────────────
 
@@ -376,6 +832,7 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setEnabled(True)
         self._cancel_btn.setVisible(True)
         self.menuBar().setEnabled(False)
+        self._toolbar.setEnabled(False)
 
     def set_idle(self, message: str = "Ready") -> None:
         """Return the UI to idle state."""
@@ -384,6 +841,7 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self._cancel_btn.setVisible(False)
         self.menuBar().setEnabled(True)
+        self._toolbar.setEnabled(True)
 
     def _on_line_progress(self, lines: int, percent: int) -> None:
         if not self._busy_message:
@@ -409,10 +867,26 @@ class MainWindow(QMainWindow):
     def current_settings(self) -> dict:
         return load_settings()
 
-    def attach_worker(self, worker: "QThread") -> None:
+    def attach_worker(
+        self, worker: "QThread", label: str = "", detail: str = "", journal: bool = True,
+    ) -> None:
         """Register and start a worker; connect generic error, progress and
         cancel handling.  Shows the Cancel button even when the caller did not
-        call :meth:`set_busy` before."""
+        call :meth:`set_busy` before.
+
+        Args:
+            worker:  The thread to run.
+            label:   Tool name for the journal.
+            detail:  Parameters for the journal.
+            journal: ``False`` for read-only runs that should not be logged.
+        """
+        if journal:
+            self._pending = {
+                "time": datetime.now(UTC), "t0": time.monotonic(),
+                "label": label or "Tool", "detail": detail,
+                "inputs": list(self._files),
+                "lines_in": self._total_lines(self._files),
+            }
         self._stop_line_count()
         self._worker = worker
         worker.finished.connect(self._on_worker_finished)
@@ -421,13 +895,18 @@ class MainWindow(QMainWindow):
             worker.line_progress.connect(self._on_line_progress)
         if not self._busy_message:
             self.set_busy("Working…")
+        self._refresh_actions()
         worker.start()
 
     def _on_worker_finished(self) -> None:
         self._worker = None
+        self._finish_journal_entry("done")
+        self._refresh_actions()
         self._start_line_count()
 
     def _on_worker_error(self, msg: str) -> None:
+        if self._pending is not None:
+            self._pending["status"] = "cancelled" if msg == CANCELLED else "failed"
         if msg == CANCELLED:
             self.set_idle("Cancelled — partial output removed")
             return
@@ -457,13 +936,51 @@ class MainWindow(QMainWindow):
         self._stop_line_count()
         event.accept()
 
-    # ── Menu helpers ───────────────────────────────────────────────────────────
+    # ── Tool finder (Ctrl+K) ───────────────────────────────────────────────────
 
-    def _add_tool(self, name: str, slot) -> None:
-        """Add a named action to the Tools menu connected to *slot*."""
-        act = QAction(name, self)
-        act.triggered.connect(slot)
-        self._tools_menu.addAction(act)
+    def _find_tool(self) -> None:
+        """Type part of a tool name, press Enter to open it."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Find tool")
+        dialog.resize(420, 380)
+        box = QLineEdit()
+        box.setPlaceholderText("Type part of a tool name, Enter to open")
+        listing = QListWidget()
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(box)
+        layout.addWidget(listing)
+        entries = [
+            (f"{group}  ›  {act.text().replace('&', '').rstrip('…')}", act)
+            for group, act in self._tool_actions
+        ]
+        shown: list[QAction] = []
+
+        def refill(text: str) -> None:
+            listing.clear()
+            shown.clear()
+            words = text.lower().split()
+            for title, act in entries:
+                if all(word in title.lower() for word in words):
+                    listing.addItem(title)
+                    shown.append(act)
+            listing.setCurrentRow(0)
+
+        def choose(*_args) -> None:
+            row = listing.currentRow()
+            if row < 0:
+                return
+            act = shown[row]
+            dialog.accept()
+            if act.isEnabled():
+                act.trigger()
+            else:
+                self._set_status("Load files first to use this tool")
+
+        box.textChanged.connect(refill)
+        box.returnPressed.connect(choose)
+        listing.itemDoubleClicked.connect(choose)
+        refill("")
+        dialog.exec()
 
     # ── Tool action handlers ───────────────────────────────────────────────────
 
@@ -471,15 +988,12 @@ class MainWindow(QMainWindow):
         from gui.run_tool import run_stats
         if self._worker is not None or not self._files:
             return
-        row = self._table.currentRow()
-        if row < 0 and len(self._files) == 1:
-            row = 0
-        if not 0 <= row < len(self._files):
+        path = self._selected_path()
+        if path is None:
             QMessageBox.information(
                 self, "File statistics", "Select one file in the list first."
             )
             return
-        path = self._files[row]
         if not path.is_file():
             QMessageBox.warning(self, "File statistics", f"File not found:\n{path}")
             return
@@ -632,8 +1146,12 @@ class MainWindow(QMainWindow):
     # ── System dialogs ─────────────────────────────────────────────────────────
 
     def _show_options(self) -> None:
-        dlg = OptionsDialog(self)
-        dlg.exec()
+        OptionsDialog(self).exec()
+        # Settings may change how files are read: sniff and peek again.
+        self._sniffed.clear()
+        self._refresh_actions()
+        self._refresh_peek()
+        self._start_line_count()
 
     def _show_about(self) -> None:
         QMessageBox.about(

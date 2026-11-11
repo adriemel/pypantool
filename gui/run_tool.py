@@ -29,6 +29,26 @@ from gui.worker import (
 )
 
 
+_HIDDEN_PARAMS = {"delimiter", "header_line", "comment_prefix", "on_fail"}
+
+
+def describe_params(fn) -> str:
+    """Short text of the parameters bound to a ``functools.partial`` (journal)."""
+    parts: list[str] = []
+    for key, value in getattr(fn, "keywords", {}).items():
+        if key in _HIDDEN_PARAMS or value in (False, None, "", 0):
+            continue
+        if value is True:
+            parts.append(key)
+        elif isinstance(value, (list, tuple)):
+            parts.append(f"{len(value)} {key}")
+        else:
+            text = str(value).replace("\t", "^t")
+            parts.append(f"{key}={text}")
+    text = ", ".join(parts)
+    return text if len(text) <= 160 else text[:157] + "…"
+
+
 def run_tool(
     main_window,
     process_fn: Callable[[Iterable[str]], Iterator[str]],
@@ -92,7 +112,7 @@ def run_tool(
     worker.file_started.connect(_on_file_started)
     worker.all_done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(worker, label, describe_params(process_fn))
 
 
 def run_concat(
@@ -170,7 +190,7 @@ def run_concat(
     main_window.set_busy(label)
     worker.done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(worker, label, describe_params(process_fn))
 
 
 def run_split(
@@ -211,7 +231,7 @@ def run_split(
     worker.file_started.connect(_on_file_started)
     worker.all_done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(worker, label, describe_params(process_fn))
 
 
 def run_compress(
@@ -247,7 +267,7 @@ def run_compress(
     worker.file_started.connect(_on_file_started)
     worker.all_done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(worker, label)
 
 
 def run_rename(
@@ -289,7 +309,11 @@ def run_rename(
     worker.file_renamed.connect(_on_file_renamed)
     worker.all_done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(
+        worker, "Rename files",
+        ", ".join(f"{k}={v}" for k, v in (("search", search), ("replace", replace),
+                                           ("prefix", prefix), ("suffix", suffix)) if v),
+    )
 
 
 def run_filelist(main_window) -> None:
@@ -322,7 +346,7 @@ def run_filelist(main_window) -> None:
     main_window.set_busy("Save file list")
     worker.done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(worker, "Save file list")
 
 
 def run_stats(main_window, path: Path) -> None:
@@ -349,4 +373,4 @@ def run_stats(main_window, path: Path) -> None:
     main_window.set_busy(f"Statistics: {path.name}")
     worker.done.connect(_on_done)
 
-    main_window.attach_worker(worker)
+    main_window.attach_worker(worker, journal=False)

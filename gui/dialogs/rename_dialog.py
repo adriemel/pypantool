@@ -58,6 +58,7 @@ class RenameDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Rename")
         self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
         self._ok_button.setEnabled(False)
         buttons.accepted.connect(self._accept)

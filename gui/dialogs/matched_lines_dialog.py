@@ -47,6 +47,7 @@ class MatchedLinesDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(verb)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
 

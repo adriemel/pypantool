@@ -31,6 +31,7 @@ from PySide6.QtCore import QFile, QThread, Signal
 from core.filelist import count_newlines
 from core.naming import input_matcher, output_problem
 from core.profile import profile_lines
+from gui.peek import sniff
 
 CANCELLED = "Cancelled by user."
 
@@ -533,24 +534,46 @@ class StatsWorker(_StreamWorker):
 
 
 class LineCountWorker(QThread):
-    """Count the lines of each path in the background (for the file list).
+    """Describe loaded files in the background (for the file list).
 
-    Reads in 1 MiB binary chunks; stops quietly on ``requestInterruption``.
-    Unreadable files are skipped.
+    First pass: sniff the first 64 kB of every file (columns, encoding, line
+    endings); this is quick, so all rows fill in at once.  Second pass:
+    count the lines of each file in 1 MiB binary chunks.  Stops quietly on
+    ``requestInterruption``.  Unreadable files are skipped.
 
     Signals:
-        counted(object, int): (Path, line count).
+        sniffed(object, object): (Path, :class:`~core.profile.TableProfile`).
+        counted(object, int):    (Path, line count).
     """
 
+    sniffed = Signal(object, object)
     counted = Signal(object, int)
 
     _CHUNK = 1024 * 1024
 
-    def __init__(self, paths: list[Path], parent: Any = None) -> None:
+    def __init__(
+        self,
+        count_paths: list[Path],
+        sniff_paths: list[Path] | None = None,
+        encoding: str = "UTF-8",
+        table_options: dict | None = None,
+        parent: Any = None,
+    ) -> None:
         super().__init__(parent)
-        self._paths = paths
+        self._paths = count_paths
+        self._sniff_paths = sniff_paths or []
+        self._encoding = encoding
+        self._table_options = table_options or {}
 
     def run(self) -> None:
+        for path in self._sniff_paths:
+            if self.isInterruptionRequested():
+                return
+            try:
+                profile = sniff(path, self._encoding, self._table_options)
+            except (OSError, ValueError, LookupError):
+                continue
+            self.sniffed.emit(path, profile)
         for path in self._paths:
             if self.isInterruptionRequested():
                 return

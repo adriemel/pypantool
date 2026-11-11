@@ -1,6 +1,18 @@
 # PyPanTool — Plain-English Walkthrough
 
 ## What Changed
+**2026-11-11 (UI)** — The main window was redesigned. Nothing about the tools themselves changed.
+
+- **You now see the data.** Click a file in the list and the *Peek* pane below shows its first 200 lines, with column numbers across the top and line numbers down the side, so you can read off what to type into a tool (for example "columns 3-5"). Only the beginning of the file is read, so this is instant even for huge files.
+- **The file list tells you more.** Besides size and line count it shows the number of columns and a quick check of the first 64 kB: encoding, line endings, and whether rows have differing numbers of cells. Anything suspicious is shown in amber; File Statistics gives the details.
+- **Settings are always visible.** The box at the top right shows delimiter, input → output encoding, header line and output name pattern. Click it to open Options.
+- **Journal.** Every tool run adds a line at the bottom: time, tool, the parameters you used, how many files and lines went in and came out, and how long it took. "Save journal…" writes this as a text file you can keep with the dataset as a processing record.
+- **Step back (Ctrl+Z).** After a tool ran, the list shows the output files. Step back reloads the files that were in the list before. It does not delete anything.
+- **Menus by subject.** Instead of one long Tools menu there are Columns, Lines, Text, Combine / Split and Files. If you cannot find a tool, press Ctrl+K, type part of its name and press Enter.
+- **Dialogs.** The main button now says what will happen ("Extract", "Concatenate", ...) and is visually distinct from Cancel. Extract/Delete Columns shows the names of the columns your entry selects while you type.
+- **Menus and toolbar are locked while a tool runs**, so the list cannot be cleared mid-run.
+- **Where the code lives:** `gui/main_window.py` (layout, peek, journal), `gui/style.py` (colours and fonts, all at the top of the file), `gui/peek.py` (reading the beginning of a file).
+
 **2026-11-11 (later still)** — New: **Convert Date/Time to ISO 8601** (Tools menu, below Recalculate Columns). It rewrites a date column of every loaded file into the form PANGAEA expects, e.g. `15.01.2024 08:00:00` becomes `2024-01-15T08:00:00`.
 
 - **Date column / separate time column:** pick them by name (the names come from the first loaded file). If date and time are in two columns, they are joined into one `Date/Time` column and the time column is removed.
