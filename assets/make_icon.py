@@ -1,8 +1,10 @@
 """Draw the PyPanTool icon and write assets/pypantool.ico and pypantool.png.
 
 Run:  python assets/make_icon.py
-The .ico holds 16-256 px images; sizes below 64 px show the globe only,
-because the word "pantool" is not readable that small.
+The icon is a teal tile with a simplified PANGAEA logo (red-to-yellow ellipse,
+continents in flat green) and the word "pantool".  The .ico holds 16-256 px
+images; sizes below 64 px show the logo only, because the word is not
+readable that small.
 """
 
 import os
@@ -12,32 +14,39 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QBuffer, QByteArray, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QBuffer, QByteArray, QRectF, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QGuiApplication,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRadialGradient,
+)
 
-PAPER, INK, TEAL, RULE = "#FBFAF7", "#1D2126", "#0E6B6B", "#B9B4A7"
+PAPER, TEAL, TEAL_DARK = "#FBFAF7", "#0E6B6B", "#0A5252"
+LAND = "#2E9483"
+# Ocean of the logo: yellow centre to red rim (colours sampled from the logo).
+OCEAN = ((0.0, "#F5C400"), (0.45, "#EC9F00"), (0.78, "#DD4A08"), (1.0, "#BF0D0D"))
+ASPECT = 760 / 460           # width / height of the logo ellipse
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 
-# Simplified Pangaea on a 100 x 100 globe: Laurasia in the north, Gondwana in
-# the south, the Tethys Sea opening to the east.  (x, y) outline points.
-_LAND = [
-    (38, 6), (58, 9), (74, 18), (84, 30), (80, 38), (66, 40), (58, 46),
-    (62, 54), (76, 58), (86, 66), (82, 78), (70, 88), (56, 95), (44, 92),
-    (38, 80), (30, 68), (24, 56), (20, 44), (16, 32), (22, 18),
-]
+# Simplified outline of the continents, traced from the logo on
+# www.pangaea.de (white = land).  Covers exactly the ellipse's bounding box.
+_MASK_FILE = Path(__file__).parent / "pangaea_logo_land.png"
 
 
-def _land_path(scale: float, dx: float, dy: float) -> QPainterPath:
-    """Closed smooth outline through the _LAND points."""
-    pts = [QPointF(dx + x * scale, dy + y * scale) for x, y in _LAND]
-    path = QPainterPath()
-    n = len(pts)
-    mid = lambda a, b: QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
-    path.moveTo(mid(pts[-1], pts[0]))
-    for i in range(n):
-        path.quadTo(pts[i], mid(pts[i], pts[(i + 1) % n]))
-    path.closeSubpath()
-    return path
+def _land_image(width: int, height: int) -> QImage:
+    """Land in flat colour, transparent elsewhere, scaled to the ellipse box."""
+    mask = QImage(str(_MASK_FILE)).convertToFormat(QImage.Format.Format_Grayscale8)
+    mask = mask.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    land = QImage(width, height, QImage.Format.Format_ARGB32)
+    land.fill(QColor(LAND))
+    land.setAlphaChannel(mask)
+    return land
 
 
 def draw(size: int) -> QImage:
@@ -45,27 +54,39 @@ def draw(size: int) -> QImage:
     image.fill(Qt.GlobalColor.transparent)
     p = QPainter(image)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     with_text = size >= 64
 
-    if with_text:
-        # Paper tile so the icon reads on any desktop background.
-        inset = size * 0.03
-        tile = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
-        p.setPen(QPen(QColor(RULE), max(1.0, size / 128)))
-        p.setBrush(QColor(PAPER))
-        p.drawRoundedRect(tile, size * 0.14, size * 0.14)
-        diameter = size * 0.60
-        left, top = (size - diameter) / 2, size * 0.09
-    else:
-        diameter = size - 1.0
-        left = top = 0.5
+    # Teal tile.
+    inset = size * 0.03
+    tile = QRectF(inset, inset, size - 2 * inset, size - 2 * inset)
+    p.setPen(QPen(QColor(TEAL_DARK), max(1.0, size / 128)))
+    p.setBrush(QColor(TEAL))
+    p.drawRoundedRect(tile, size * 0.16, size * 0.16)
 
-    globe = QPainterPath()
-    globe.addEllipse(QRectF(left, top, diameter, diameter))
+    # Logo ellipse: gradient ocean, flat land.
+    width = size * (0.80 if with_text else 0.86)
+    height = width / ASPECT
+    left = (size - width) / 2
+    top = size * 0.15 if with_text else (size - height) / 2
+    box = QRectF(left, top, width, height)
+    ocean = QRadialGradient(box.center(), width / 2)
+    for stop, colour in OCEAN:
+        ocean.setColorAt(stop, QColor(colour))
+    ellipse = QPainterPath()
+    ellipse.addEllipse(box)
     p.setPen(Qt.PenStyle.NoPen)
-    p.fillPath(globe, QColor(TEAL))
-    p.setClipPath(globe)
-    p.fillPath(_land_path(diameter / 100, left, top), QColor(PAPER))
+    # A radial gradient is circular; squash it to follow the ellipse.
+    p.save()
+    p.translate(box.center())
+    p.scale(1.0, height / width)
+    p.translate(-box.center())
+    circle = QPainterPath()
+    circle.addEllipse(box.center(), width / 2, width / 2)
+    p.fillPath(circle, ocean)
+    p.restore()
+    p.setClipPath(ellipse)
+    p.drawImage(box.topLeft(), _land_image(round(width), round(height)))
     p.setClipping(False)
 
     if with_text:
@@ -74,8 +95,8 @@ def draw(size: int) -> QImage:
         font.setPixelSize(round(size * 0.185))
         font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 97)
         p.setFont(font)
-        p.setPen(QColor(INK))
-        p.drawText(QRectF(0, size * 0.70, size, size * 0.24),
+        p.setPen(QColor(PAPER))
+        p.drawText(QRectF(0, size * 0.68, size, size * 0.24),
                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "pantool")
     p.end()
     return image
