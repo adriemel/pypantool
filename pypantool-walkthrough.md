@@ -1,6 +1,16 @@
 # PyPanTool — Plain-English Walkthrough
 
 ## What Changed
+**2026-11-11 (later still)** — New: **Convert Date/Time to ISO 8601** (Tools menu, below Recalculate Columns). It rewrites a date column of every loaded file into the form PANGAEA expects, e.g. `15.01.2024 08:00:00` becomes `2024-01-15T08:00:00`.
+
+- **Date column / separate time column:** pick them by name (the names come from the first loaded file). If date and time are in two columns, they are joined into one `Date/Time` column and the time column is removed.
+- **Format in the file:** describe how the values are written, using the letters listed in the dialog (`dd.MM.yyyy HH:mm`, `M/d/yyyy h:mm:ss AP`, `yyyy DDD HH:mm` for year plus day of year, ...). `excel` reads Excel day numbers, `unix` reads seconds since 1970. With two columns, write the date part and the time part separated by one space.
+- **UTC offset:** if the times are local time, enter the offset (2 for UTC+2); it is subtracted so the output is UTC. Leave 0 to keep the times as they are.
+- **Preview:** the dialog shows the first data row before and after, so a wrong format is visible before anything runs.
+- **Values that do not fit** are left unchanged, and a message after the run lists how many and the first few with line numbers. If the first 100 values all fail, the run stops and writes nothing, because the format is almost certainly wrong.
+- **Precision follows the format:** no time in the format gives `2024-01-15`, no seconds gives `2024-01-15T08:00`.
+- **Where the code lives:** `core/datetime_convert.py` (the format letters are in the `_TOKENS` list at the top), `gui/dialogs/datetime_dialog.py` (the preset formats are in `_FORMATS`).
+
 **2026-11-11 (later)** — New: **File statistics**. Select one file in the list and press the "File Statistics…" toolbar button (or Ctrl+I, or double-click the file). The app reads the file once in the background and opens a window that describes it; the file itself is never changed.
 
 - **Top of the window (the file):** whether the file is valid in the input encoding chosen in Options (and where the first invalid byte is), whether it has a byte-order mark, which line endings it uses (CRLF, LF or mixed), how many lines it has, which line is the header, and whether any rows have more or fewer cells than the header (with the first line numbers).

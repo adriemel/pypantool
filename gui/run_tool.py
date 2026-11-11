@@ -34,6 +34,7 @@ def run_tool(
     process_fn: Callable[[Iterable[str]], Iterator[str]],
     label: str,
     pass_path: bool = False,
+    on_done: Callable[[], None] | None = None,
 ) -> None:
     """Build jobs from *main_window*'s file list, create a worker, and start it.
 
@@ -45,6 +46,8 @@ def run_tool(
         label:       Short human-readable operation name shown in the status bar.
         pass_path:   Forwarded to :class:`~gui.worker.ProcessWorker`; when
                      ``True`` the core function also receives the input path.
+        on_done:     Optional callback run on the GUI thread after all files
+                     were written (e.g. to show a summary).
     """
     settings = main_window.current_settings()
     counter = main_window.run_counter
@@ -83,6 +86,8 @@ def run_tool(
         main_window.increment_run_counter()
         main_window.replace_files(out_paths)
         main_window.set_idle(f"Done — {len(out_paths)} file(s) written")
+        if on_done is not None:
+            on_done()
 
     worker.file_started.connect(_on_file_started)
     worker.all_done.connect(_on_done)

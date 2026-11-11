@@ -29,3 +29,10 @@ Tab-delimited PANGAEA-style download, 11 lines. Contains:
 - 1 comment line containing a tab (line 9)
 - 1 short row with 4 cells (line 10) and 1 non-numeric value `n.d.` (line 11)
 - Trailing zeros (`-1.820`, `-1.80`) for precision-preserving recalculation
+
+## test_datetime_formats.txt (for Convert Date/Time tests)
+Tab-delimited, 5 columns, 8 lines (1 header + 6 data + 1 comment on line 4).
+- `Date` as `dd.MM.yyyy` (one row without leading zeros: `1.3.2024`), `Time` as `HH:mm:ss`
+- `Excel day`: the same instants as Excel serial day numbers (1900 date system)
+- 1 row with empty date, time and serial (line 6)
+- 1 row with a date in the wrong format (`2024-03-02`) and `n.d.` as serial (line 7)

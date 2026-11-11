@@ -172,6 +172,7 @@ class MainWindow(QMainWindow):
         self._add_tool("D&elete Columns…", self._run_delete_columns)
         self._add_tool("Delete Matched Col&umns…", self._run_delete_matched_columns)
         self._add_tool("&Recalculate Columns…", self._run_recalc_columns)
+        self._add_tool("Convert Date/Time to ISO &8601…", self._run_convert_datetime)
         self._tools_menu.addSeparator()
         self._add_tool("&Extract Lines…", self._run_extract_lines)
         self._add_tool("Extract &Matched Lines…", self._run_extract_matched_lines)
@@ -587,6 +588,10 @@ class MainWindow(QMainWindow):
     def _run_recalc_columns(self) -> None:
         from gui.dialogs.recalc_dialog import RecalcDialog
         RecalcDialog(self).exec()
+
+    def _run_convert_datetime(self) -> None:
+        from gui.dialogs.datetime_dialog import DateTimeDialog
+        DateTimeDialog(self).exec()
 
     def _run_rename_files(self) -> None:
         from gui.dialogs.rename_dialog import RenameDialog

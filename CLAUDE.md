@@ -79,6 +79,7 @@ Each tool opens a small dialog for parameters, then processes all loaded files.
 28. **Compress folder (zip/tar.gz)** — folder picker, recursive.
 29. **Decompress files** — dispatch on `.zip`/`.gz`/`.tgz`/`.tar`/`.tar.gz`, extract next to the archive.
 30. **File statistics** — read-only scan of the *selected* file (toolbar, Tools menu, Ctrl+I or double-click) shown in a window: encoding validity, BOM, line endings, header line, row-width deviations; per column type, filled/empty/numeric counts, min/max, decimals, distinct count (capped at 1000), missing-value markers, non-numeric examples with line numbers, Date/Time order checks. "Save report…" writes `<name>_stats.txt` (auto-numbered). Core: `core/profile.py`; it is the one tool that returns a result object instead of a line iterator and reads lines with endings and `errors="surrogateescape"`.
+31. **Convert Date/Time to ISO 8601** — rewrite one date column (optionally merged with a separate time column) as `yyyy-MM-ddTHH:mm[:ss[.fff]]`; header becomes `Date/Time`. Input format given with PanTool-style tokens (`dd.MM.yyyy HH:mm:ss`, `DDD` = day of year, `MMM`, `AP`) or `excel` / `unix`; optional UTC offset is subtracted. Non-matching cells stay unchanged and are reported; the run aborts if the first 100 values all fail. Dialog previews the first data row. Core: `core/datetime_convert.py`.
 
 ## File Handling — File Menu
 
